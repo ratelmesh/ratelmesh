@@ -61,7 +61,10 @@ Official downloads and documentation are available at
 
 ## License
 
-RatelMesh client source is licensed under the
-[Apache License 2.0](LICENSE). Third-party components remain under their
-respective licenses; macOS runtime notices are listed in
+The current `main` branch and future RatelMesh client releases are licensed
+under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). The published `v0.2.33` release and its earlier public
+history remain available under the Apache License 2.0 terms attached to those
+versions. Third-party components remain under their respective licenses;
+macOS runtime notices are listed in
 [`packaging/macos/THIRD-PARTY-NOTICES.txt`](packaging/macos/THIRD-PARTY-NOTICES.txt).
