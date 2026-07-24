@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>RATELMESH_COORD</key>
+		<string>https://control.ratelmesh.com</string>
+		<key>RATELMESH_VERIFY_KEY</key>
+		<string>e1qzn0SwLDllwhSZ2k6zYdMLXXvj3y6quBo5KYwKjlI=</string>
+		<key>PATH</key>
+		<string>/usr/local/ratelmesh/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.ratelmesh.daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/ratelmesh/bin/ratelmeshd</string>
+		<string>-gui</string>
+		<string>127.0.0.1:8088</string>
+		<string>-state</string>
+		<string>/var/lib/ratelmesh</string>
+		<string>-socket</string>
+		<string>/var/run/ratelmesh.sock</string>
+		<string>-tunnel-dns</string>
+		<string>1.1.1.1:53</string>
+		<string>-enable-nat</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/var/log/ratelmesh.log</string>
+	<key>StandardOutPath</key>
+	<string>/var/log/ratelmesh.log</string>
+</dict>
+</plist>

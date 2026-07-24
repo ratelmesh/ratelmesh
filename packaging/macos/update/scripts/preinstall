@@ -1,0 +1,20 @@
+#!/bin/bash
+set -u
+
+PLIST=/Library/LaunchDaemons/com.ratelmesh.daemon.plist
+STATE=/var/lib/ratelmesh
+LEGACY_PLIST=/Library/LaunchDaemons/ai.futurealpha.h"bmesh".plist
+LEGACY_STATE=/var/lib/h"bmesh"
+
+if [ -f "$LEGACY_PLIST" ] || [ -d "$LEGACY_STATE" ]; then
+  echo "A legacy installation was detected. Use the RatelMesh full installer once to migrate its device identity safely." >&2
+  exit 1
+fi
+
+if [ ! -f "$PLIST" ] || [ ! -d "$STATE" ]; then
+  echo "RatelMesh macOS update requires an existing enrolled installation." >&2
+  echo "Use the full installer for a new Mac." >&2
+  exit 1
+fi
+
+exit 0

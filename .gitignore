@@ -1,0 +1,21 @@
+# Build output
+/bin/
+/dist/
+/ratelmeshd
+/clients/android/app/libs/
+.wrangler/
+**/.wrangler/
+/deploy/download-edge/public/download/*.pkg
+
+# Local state / sockets
+*.sock
+*.key
+
+# OS / editor cruft
+.DS_Store
+*.swp
+scripts/e2e/bin/
+
+# Codex↔Claude coordination scratchpad (local working-tree channel, not product)
+CODEX_SYNC.md
+.claude/scheduled_tasks.lock

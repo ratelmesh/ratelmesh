@@ -1,0 +1,12 @@
+--- a/cmd/gomobile/env.go
++++ b/cmd/gomobile/env.go
+@@ -537,7 +537,7 @@
+			// See also:
+			// * https://developer.android.com/ndk/guides/other_build_systems
+			// * https://github.com/android/ndk/wiki/Changelog-r24
+			// * https://github.com/android/ndk/issues/1299
+-			if runtime.GOOS == "darwin" {
++			if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+				arch = "x86_64"
+				break
+			}

@@ -1,0 +1,151 @@
+#!/bin/bash
+set -u
+
+LABEL=com.ratelmesh.daemon
+MENU_LABEL=com.ratelmesh.menubar
+PLIST=/Library/LaunchDaemons/com.ratelmesh.daemon.plist
+BIN=/usr/local/ratelmesh/bin
+
+ensure_cloud_exit_permission() {
+  if ! plutil -extract ProgramArguments raw -o - "$PLIST" >/dev/null 2>&1; then
+    plutil -insert ProgramArguments -array "$PLIST"
+  fi
+  if ! /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" 2>/dev/null | grep -Fxq '    -enable-nat'; then
+    /usr/libexec/PlistBuddy -c 'Add :ProgramArguments: string -enable-nat' "$PLIST"
+  fi
+}
+
+ensure_official_authority_key() {
+  coord=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RATELMESH_COORD' "$PLIST" 2>/dev/null || true)
+  [ "$coord" = https://control.ratelmesh.com ] || return 0
+  key=e1qzn0SwLDllwhSZ2k6zYdMLXXvj3y6quBo5KYwKjlI=
+  if /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RATELMESH_VERIFY_KEY' "$PLIST" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:RATELMESH_VERIFY_KEY $key" "$PLIST"
+  else
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:RATELMESH_VERIFY_KEY string $key" "$PLIST"
+  fi
+}
+
+chown root:wheel "$BIN/ratelmeshd" "$BIN/ratelmesh" "$BIN/ratelmesh-uninstall"
+chmod 755 "$BIN/ratelmeshd" "$BIN/ratelmesh" "$BIN/ratelmesh-uninstall"
+xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
+
+# Update and restart the existing per-user menu bar app without changing its
+# LaunchAgent path. New installations remain the responsibility of the full
+# installer; this package only touches users who already have the app.
+SOURCE_APP=/usr/local/ratelmesh/share/RatelMesh.app
+SYSTEM_AGENT=/Library/LaunchAgents/com.ratelmesh.menubar.plist
+SYSTEM_APP=/Applications/RatelMesh.app
+
+# Current installations use the system LaunchAgent and /Applications copy.
+# Stop the console user's instance before replacing the running bundle, then
+# bootstrap the same agent again. Other users receive the new bundle next time
+# they log in.
+CONSOLE_USER=$(stat -f '%Su' /dev/console 2>/dev/null || true)
+if [ -f "$SYSTEM_AGENT" ] && [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != root ]; then
+  CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null || true)
+  [ -z "$CONSOLE_UID" ] || launchctl bootout "gui/$CONSOLE_UID/$MENU_LABEL" 2>/dev/null || true
+fi
+# /Applications is admin-writable, so the bundle path is not trusted input even
+# though we run as root. A pre-planted symlink is harmless on its own (rm -rf
+# unlinks the link, not its target), but the gap between the rm and the ditto is
+# racy: re-plant a symlink inside it and ditto follows it, writing root-owned
+# content wherever it points. Creating the directory ourselves closes that —
+# mkdir without -p fails if anything already exists at the path, so a re-planted
+# link aborts the install instead of being followed. preinstall guards its own
+# paths the same way.
+if [ -L "$SYSTEM_APP" ]; then
+  echo "Unsafe application path (symlink); refusing update." >&2
+  exit 1
+fi
+rm -rf "$SYSTEM_APP"
+if ! mkdir "$SYSTEM_APP"; then
+  echo "Could not create a fresh application bundle path; refusing update." >&2
+  exit 1
+fi
+ditto "$SOURCE_APP" "$SYSTEM_APP"
+chown -R root:wheel "$SYSTEM_APP"
+xattr -dr com.apple.quarantine "$SYSTEM_APP" 2>/dev/null || true
+if [ -f "$SYSTEM_AGENT" ] && [ -n "${CONSOLE_UID:-}" ]; then
+  MENU_SERVICE="gui/$CONSOLE_UID/$MENU_LABEL"
+  i=0
+  while launchctl print "$MENU_SERVICE" >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 40 ]; then
+      echo "The previous RatelMesh menu service did not stop." >&2
+      exit 1
+    fi
+    sleep 0.25
+  done
+  launchctl enable "$MENU_SERVICE" 2>/dev/null || true
+  if ! launchctl bootstrap "gui/$CONSOLE_UID" "$SYSTEM_AGENT"; then
+    echo "RatelMesh menu app could not be registered after update." >&2
+    exit 1
+  fi
+  if ! launchctl kickstart -k "$MENU_SERVICE"; then
+    echo "RatelMesh menu app could not be started after update." >&2
+    exit 1
+  fi
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if launchctl print "$MENU_SERVICE" 2>/dev/null | grep -q 'pid ='; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 0.25
+  done
+  if [ "$i" -ge 20 ]; then
+    echo "RatelMesh menu app exited before its icon became available." >&2
+    exit 1
+  fi
+fi
+
+if [ -s /var/lib/ratelmesh/session.token ]; then
+  mkdir -p /var/db/ratelmesh
+  : >/var/db/ratelmesh/enrolled
+  chown root:wheel /var/db/ratelmesh/enrolled
+  chmod 644 /var/db/ratelmesh/enrolled
+fi
+
+# Never follow legacy, user-owned LaunchAgents or write below /Users as root.
+# The trusted system LaunchAgent and /Applications copy above are the supported
+# migration path; attempting an in-place legacy update creates a symlink race.
+
+# Preserve the existing plist, coordinator, auth/session state and selected
+# exit. Permit cloud EXIT grants, replace the binaries, then perform a
+# deterministic launchd restart.
+ensure_cloud_exit_permission
+ensure_official_authority_key
+launchctl bootout "system/$LABEL" 2>/dev/null || true
+i=0
+while launchctl print "system/$LABEL" >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -ge 40 ]; then
+    echo "The previous RatelMesh daemon did not stop." >&2
+    exit 1
+  fi
+  sleep 0.25
+done
+
+launchctl enable "system/$LABEL" 2>/dev/null || true
+if ! launchctl bootstrap system "$PLIST"; then
+  echo "RatelMesh daemon could not be registered after update." >&2
+  exit 1
+fi
+if ! launchctl kickstart -k "system/$LABEL"; then
+  echo "RatelMesh daemon could not be started after update." >&2
+  exit 1
+fi
+
+i=0
+while [ "$i" -lt 60 ]; do
+  STATUS=$(curl -fsS --max-time 2 http://127.0.0.1:8088/localapi/status 2>/dev/null || true)
+  if printf '%s' "$STATUS" | grep -q '"state":"Running"'; then
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
+echo "RatelMesh daemon did not reach Running state after update." >&2
+exit 1

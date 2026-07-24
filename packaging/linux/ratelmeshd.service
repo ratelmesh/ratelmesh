@@ -1,0 +1,22 @@
+[Unit]
+Description=RatelMesh client daemon (ratelmeshd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# RATELMESH_COORD and RATELMESH_AUTHKEY live here.
+EnvironmentFile=/etc/ratelmesh/client.env
+# Requires the wgreal build to bring up the tunnel. Add -kill-switch to fail
+# closed while an exit is active; -accept-routes to accept subnet routes.
+ExecStart=/usr/local/bin/ratelmeshd -coord ${RATELMESH_COORD} -authkey ${RATELMESH_AUTHKEY} \
+  -hostname %H -enable-nat -state /var/lib/ratelmeshd -socket /run/ratelmeshd.sock
+Restart=always
+RestartSec=2
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+StateDirectory=ratelmeshd
+RuntimeDirectory=ratelmeshd
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

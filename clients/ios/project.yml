@@ -1,0 +1,124 @@
+name: RatelMesh
+options:
+  bundleIdPrefix: com.ratelmesh
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+packages:
+  WireGuardKit:
+    path: Dependencies/wireguard-apple
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CURRENT_PROJECT_VERSION: 233
+    MARKETING_VERSION: 0.2.33
+    DEVELOPMENT_TEAM: "$(RATELMESH_DEVELOPMENT_TEAM)"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    RATELMESH_APP_GROUP: group.com.ratelmesh.shared
+    RATELMESH_KEYCHAIN_GROUP: "$(AppIdentifierPrefix)com.ratelmesh.shared"
+targets:
+  RatelMesh:
+    type: application
+    platform: iOS
+    sources:
+      - RatelMesh
+      - Shared
+    info:
+      path: RatelMesh/Info.plist
+      properties:
+        CFBundleDisplayName: RatelMesh
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        RatelMeshAppGroup: "$(RATELMESH_APP_GROUP)"
+        RatelMeshKeychainAccessGroup: "$(RATELMESH_KEYCHAIN_GROUP)"
+        UILaunchScreen: {}
+        NSLocationWhenInUseUsageDescription: RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this iPhone or iPad.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: RatelMesh/RatelMesh.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - "$(RATELMESH_APP_GROUP)"
+        keychain-access-groups:
+          - "$(RATELMESH_KEYCHAIN_GROUP)"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.ios
+        PRODUCT_NAME: RatelMesh
+        CODE_SIGN_ENTITLEMENTS: RatelMesh/RatelMesh.entitlements
+    dependencies:
+      - target: PacketTunnel
+        embed: true
+  PacketTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - PacketTunnel
+      - Shared
+    info:
+      path: PacketTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: RatelMesh Tunnel
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        RatelMeshAppGroup: "$(RATELMESH_APP_GROUP)"
+        RatelMeshKeychainAccessGroup: "$(RATELMESH_KEYCHAIN_GROUP)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).PacketTunnelProvider"
+    entitlements:
+      path: PacketTunnel/PacketTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - "$(RATELMESH_APP_GROUP)"
+        keychain-access-groups:
+          - "$(RATELMESH_KEYCHAIN_GROUP)"
+    preBuildScripts:
+      - name: Build wireguard-go bridge
+        script: "$SRCROOT/Scripts/build-wireguard-go.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.ios.PacketTunnel
+        PRODUCT_NAME: PacketTunnel
+        CODE_SIGN_ENTITLEMENTS: PacketTunnel/PacketTunnel.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_BITCODE: NO
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
+      - framework: Frameworks/RatelMeshMobile.xcframework
+        embed: false
+  RatelMeshTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: RatelMesh
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  RatelMesh:
+    build:
+      targets:
+        RatelMesh: all
+        PacketTunnel: all
+        RatelMeshTests: [test]
+    test:
+      targets:
+        - RatelMeshTests

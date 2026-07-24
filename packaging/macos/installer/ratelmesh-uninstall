@@ -1,0 +1,106 @@
+#!/bin/sh
+# Remove RatelMesh and, before deleting it, restore direct networking.
+set -eu
+
+ROOT=${RATELMESH_INSTALL_ROOT:-}
+TEST_MODE=${RATELMESH_UNINSTALL_TEST_MODE:-0}
+LABEL=com.ratelmesh.daemon
+
+if [ "$TEST_MODE" != 1 ] && [ "$(id -u)" -ne 0 ]; then
+    echo "RatelMesh uninstall requires administrator privileges." >&2
+    exit 1
+fi
+
+CONSOLE_USER=${RATELMESH_UNINSTALL_USER:-}
+if [ -z "$CONSOLE_USER" ] && [ "$TEST_MODE" != 1 ]; then
+    CONSOLE_USER=$(stat -f '%Su' /dev/console 2>/dev/null || true)
+fi
+USER_HOME=${RATELMESH_UNINSTALL_USER_HOME:-}
+if [ -z "$USER_HOME" ] && [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != root ]; then
+    USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+fi
+
+if [ "$TEST_MODE" != 1 ]; then
+    USER_ID=""
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != root ]; then
+        USER_ID=$(id -u "$CONSOLE_USER" 2>/dev/null || true)
+    fi
+    [ -z "$USER_ID" ] || launchctl bootout "gui/$USER_ID/$LABEL.menubar" 2>/dev/null || true
+
+    NAT_ENABLED=0
+    PLIST="/Library/LaunchDaemons/$LABEL.plist"
+    if [ -f "$PLIST" ] && plutil -p "$PLIST" 2>/dev/null | grep -q '"-enable-nat"'; then
+        NAT_ENABLED=1
+    fi
+
+    # SIGTERM gives ratelmeshd time to remove routes, restore DNS and close the utun.
+    launchctl bootout "system/$LABEL" 2>/dev/null || true
+    i=0
+    while { pgrep -f '^/usr/local/ratelmesh/bin/ratelmeshd([[:space:]]|$)' >/dev/null 2>&1 || pgrep -f '^/usr/local/ratelmesh/bin/wireguard-go([[:space:]]|$)' >/dev/null 2>&1; } && [ "$i" -lt 20 ]; do
+        sleep 0.25
+        i=$((i + 1))
+    done
+    pkill -TERM -f '^/usr/local/ratelmesh/bin/ratelmeshd([[:space:]]|$)' 2>/dev/null || true
+    pkill -TERM -f '^/usr/local/ratelmesh/bin/wireguard-go([[:space:]]|$)' 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f '^/usr/local/ratelmesh/bin/ratelmeshd([[:space:]]|$)' 2>/dev/null || true
+    pkill -KILL -f '^/usr/local/ratelmesh/bin/wireguard-go([[:space:]]|$)' 2>/dev/null || true
+
+    # These split-defaults are RatelMesh's full-tunnel routes. Remove them even if
+    # ratelmeshd was wedged and could not execute its normal teardown.
+    route -n delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
+    route -n delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+    route -n delete -inet6 -net ::/1 >/dev/null 2>&1 || true
+    route -n delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true
+
+    # RatelMesh currently owns a whole pf ruleset, so restore the host rules to remove
+    # either its kill switch or exit-node NAT before deleting the installation.
+    pfctl -f /etc/pf.conf >/dev/null 2>&1 || true
+    if [ "$NAT_ENABLED" = 1 ]; then
+        sysctl -w net.inet.ip.forwarding=0 >/dev/null 2>&1 || true
+    fi
+
+    # A SIGKILL can prevent ratelmeshd from restoring DNS. Only reset a service whose
+    # explicit DNS setting is RatelMesh's loopback resolver; preserve every other
+    # custom DNS configuration.
+    DEFAULT_DEV=$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')
+    if [ -n "$DEFAULT_DEV" ]; then
+        SERVICE=$(networksetup -listnetworkserviceorder 2>/dev/null | awk -v dev="$DEFAULT_DEV" '
+            /^\([0-9]+\) / { service=$0; sub(/^\([0-9]+\) /, "", service) }
+            index($0, "Device: " dev ")") { print service; exit }
+        ')
+        if [ -n "$SERVICE" ]; then
+            DNS=$(networksetup -getdnsservers "$SERVICE" 2>/dev/null || true)
+            if [ "$DNS" = "127.0.0.1" ]; then
+                networksetup -setdnsservers "$SERVICE" Empty >/dev/null 2>&1 || true
+            fi
+        fi
+    fi
+    dscacheutil -flushcache >/dev/null 2>&1 || true
+    killall -HUP mDNSResponder >/dev/null 2>&1 || true
+fi
+
+rm -f "$ROOT/Library/LaunchDaemons/$LABEL.plist"
+rm -f "$ROOT/Library/LaunchAgents/$LABEL.menubar.plist"
+rm -rf "$ROOT/usr/local/ratelmesh"
+rm -rf "$ROOT/Applications/RatelMesh.app"
+rm -rf "$ROOT/var/lib/ratelmesh" "$ROOT/var/db/ratelmesh"
+rm -f "$ROOT/var/run/ratelmesh.sock" "$ROOT/var/log/ratelmesh.log"
+rm -f "$ROOT/tmp/ratelmesh-killswitch.pf.conf" "$ROOT/tmp/ratelmesh-utun-name"
+
+if [ -n "$USER_HOME" ]; then
+    rm -f "$ROOT$USER_HOME/Library/LaunchAgents/$LABEL.menubar.plist"
+    rm -rf "$ROOT$USER_HOME/Applications/RatelMesh.app"
+    rm -rf "$ROOT$USER_HOME/Library/Application Support/ratelmesh"
+    rm -rf "$ROOT$USER_HOME/Library/HTTPStorages/$LABEL.menubar"
+    rm -rf "$ROOT$USER_HOME/Library/Caches/$LABEL.menubar"
+    rm -rf "$ROOT$USER_HOME/Library/Caches/RatelMesh"
+    rm -f "$ROOT$USER_HOME/Library/Preferences/$LABEL.menubar.plist"
+    rm -f "$ROOT$USER_HOME"/Library/Preferences/com.ratelmesh.daemon.update-*.plist
+fi
+
+if [ "$TEST_MODE" != 1 ]; then
+    pkgutil --forget com.ratelmesh.daemon >/dev/null 2>&1 || true
+    pkgutil --forget com.ratelmesh.daemon.universal >/dev/null 2>&1 || true
+    pkgutil --forget com.ratelmesh.daemon.update >/dev/null 2>&1 || true
+fi

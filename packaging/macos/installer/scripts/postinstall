@@ -1,0 +1,206 @@
+#!/bin/sh
+set -eu
+
+ROOT=${RATELMESH_INSTALL_ROOT:-}
+TEST_MODE=${RATELMESH_INSTALL_TEST_MODE:-0}
+LABEL=com.ratelmesh.daemon
+MENU_LABEL=com.ratelmesh.menubar
+PLIST="$ROOT/Library/LaunchDaemons/$LABEL.plist"
+AGENT="$ROOT/Library/LaunchAgents/$MENU_LABEL.plist"
+BIN="$ROOT/usr/local/ratelmesh/bin"
+SOURCE_APP="$ROOT/usr/local/ratelmesh/share/RatelMesh.app"
+SYSTEM_APP="$ROOT/Applications/RatelMesh.app"
+TRANSACTION="$ROOT/var/db/ratelmesh/installer-transaction"
+LOG="$ROOT/var/log/ratelmesh.log"
+STATE="$ROOT/var/lib/ratelmesh"
+ENROLLED_MARKER="$ROOT/var/db/ratelmesh/enrolled"
+
+CONSOLE_USER=""
+USER_ID=""
+MENU_SERVICE=""
+if [ "$TEST_MODE" != 1 ]; then
+    CONSOLE_USER=$(stat -f '%Su' /dev/console 2>/dev/null || true)
+    if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != root ] && [ "$CONSOLE_USER" != loginwindow ]; then
+        USER_ID=$(id -u "$CONSOLE_USER")
+        MENU_SERVICE="gui/$USER_ID/$MENU_LABEL"
+        # Stop an older in-memory copy before replacing the application bundle.
+        launchctl bootout "$MENU_SERVICE" 2>/dev/null || true
+    fi
+fi
+
+start_menu_agent() {
+    [ "$TEST_MODE" != 1 ] || return 0
+    [ -n "$USER_ID" ] || return 0
+
+    i=0
+    while launchctl print "$MENU_SERVICE" >/dev/null 2>&1; do
+        i=$((i + 1))
+        if [ "$i" -ge 40 ]; then
+            echo "The previous RatelMesh menu service did not stop." >&2
+            return 1
+        fi
+        sleep 0.25
+    done
+
+    launchctl enable "$MENU_SERVICE" 2>/dev/null || true
+    if ! launchctl bootstrap "gui/$USER_ID" "$AGENT"; then
+        echo "RatelMesh menu app could not be registered for $CONSOLE_USER." >&2
+        return 1
+    fi
+    if ! launchctl kickstart -k "$MENU_SERVICE"; then
+        echo "RatelMesh menu app could not be started for $CONSOLE_USER." >&2
+        return 1
+    fi
+
+    i=0
+    while [ "$i" -lt 20 ]; do
+        if launchctl print "$MENU_SERVICE" 2>/dev/null | grep -q 'pid ='; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.25
+    done
+    echo "RatelMesh menu app exited before its icon became available." >&2
+    return 1
+}
+
+restart_daemon() {
+    launchctl bootout "system/$LABEL" 2>/dev/null || true
+    i=0
+    while launchctl print "system/$LABEL" >/dev/null 2>&1; do
+        i=$((i + 1))
+        if [ "$i" -ge 40 ]; then
+            echo "The previous RatelMesh daemon did not stop." >&2
+            return 1
+        fi
+        sleep 0.25
+    done
+
+    launchctl enable "system/$LABEL" 2>/dev/null || true
+    if ! launchctl bootstrap system "$PLIST"; then
+        echo "RatelMesh daemon could not be registered after update." >&2
+        return 1
+    fi
+    if ! launchctl kickstart -k "system/$LABEL"; then
+        echo "RatelMesh daemon could not be started after update." >&2
+        return 1
+    fi
+
+    i=0
+    while [ "$i" -lt 60 ]; do
+        status=$(curl -fsS --max-time 2 http://127.0.0.1:8088/localapi/status 2>/dev/null || true)
+        if printf '%s' "$status" | grep -q '"state":"Running"'; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    echo "RatelMesh daemon did not reach Running state after update." >&2
+    return 1
+}
+
+refresh_enrolled_marker() {
+    if [ -s "$STATE/session.token" ]; then
+        mkdir -p "$(dirname "$ENROLLED_MARKER")"
+        : >"$ENROLLED_MARKER"
+        chmod 644 "$ENROLLED_MARKER"
+        if [ "$TEST_MODE" != 1 ]; then
+            chown root:wheel "$ENROLLED_MARKER"
+        fi
+    else
+        rm -f "$ENROLLED_MARKER"
+    fi
+}
+
+ensure_cloud_exit_permission() {
+    # Existing installations keep their coordinator and identity plist. Add
+    # only the local permission required for a later cloud EXIT grant, and do
+    # so idempotently across repeated upgrades.
+    if ! plutil -extract ProgramArguments raw -o - "$PLIST" >/dev/null 2>&1; then
+        plutil -insert ProgramArguments -array "$PLIST"
+    fi
+    if ! /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" 2>/dev/null | grep -Fxq '    -enable-nat'; then
+        /usr/libexec/PlistBuddy -c 'Add :ProgramArguments: string -enable-nat' "$PLIST"
+    fi
+}
+
+ensure_official_authority_key() {
+    coord=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RATELMESH_COORD' "$PLIST" 2>/dev/null || true)
+    [ "$coord" = https://control.ratelmesh.com ] || return 0
+    key=e1qzn0SwLDllwhSZ2k6zYdMLXXvj3y6quBo5KYwKjlI=
+    if /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:RATELMESH_VERIFY_KEY' "$PLIST" >/dev/null 2>&1; then
+        /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:RATELMESH_VERIFY_KEY $key" "$PLIST"
+    else
+        /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:RATELMESH_VERIFY_KEY string $key" "$PLIST"
+    fi
+}
+
+if [ ! -f "$TRANSACTION/mode" ]; then
+    echo "RatelMesh installer transaction is missing." >&2
+    exit 1
+fi
+MODE=$(cat "$TRANSACTION/mode")
+case "$MODE" in
+    new|upgrade|legacy-upgrade) ;;
+    *) echo "RatelMesh installer transaction is invalid." >&2; exit 1 ;;
+esac
+
+if [ "$MODE" = upgrade ]; then
+    if [ ! -f "$TRANSACTION/launchdaemon.plist" ]; then
+        echo "Existing RatelMesh configuration backup is missing." >&2
+        exit 1
+    fi
+    cp -p "$TRANSACTION/launchdaemon.plist" "$PLIST"
+fi
+
+ensure_cloud_exit_permission
+ensure_official_authority_key
+chmod 600 "$PLIST"
+chmod 755 "$BIN"/*
+mkdir -p "$(dirname "$LOG")"
+touch "$LOG"
+chmod 600 "$LOG"
+
+# See the note in update/scripts/postinstall: /Applications is admin-writable, so
+# the gap between the rm and the ditto is racy — a symlink re-planted there would
+# be followed by ditto and write root-owned content to an attacker-chosen path.
+# mkdir without -p fails if anything exists at the path, turning that race into a
+# refusal instead of a privilege escalation.
+if [ -L "$SYSTEM_APP" ]; then
+    echo "Unsafe application path (symlink); refusing installation." >&2
+    exit 1
+fi
+rm -rf "$SYSTEM_APP"
+mkdir -p "$(dirname "$SYSTEM_APP")"
+if ! mkdir "$SYSTEM_APP"; then
+    echo "Could not create a fresh application bundle path; refusing installation." >&2
+    exit 1
+fi
+ditto "$SOURCE_APP" "$SYSTEM_APP"
+
+if [ "$TEST_MODE" != 1 ]; then
+    chown root:wheel "$PLIST" "$BIN"/* "$LOG"
+    chown -R root:wheel "$SYSTEM_APP"
+    xattr -dr com.apple.quarantine "$BIN" "$SYSTEM_APP" 2>/dev/null || true
+fi
+
+refresh_enrolled_marker
+start_menu_agent
+
+if [ "$MODE" = upgrade ] || [ "$MODE" = legacy-upgrade ]; then
+    if [ "$TEST_MODE" != 1 ]; then
+        # Never mutate legacy copies below /Users as root. User-controlled
+        # LaunchAgents and symlinkable home-directory components cannot be made
+        # race-free from a shell installer. The trusted system LaunchAgent and
+        # /Applications bundle above are the supported migration target.
+
+        # The restored plist retains the existing coordinator and device state.
+        restart_daemon
+    fi
+    rm -rf "$TRANSACTION"
+    echo "RatelMesh updated. Existing coordinator and device identity were preserved."
+    exit 0
+fi
+
+rm -rf "$TRANSACTION"
+echo "Install complete. Open the RatelMesh menu and paste your one-use enrollment code."

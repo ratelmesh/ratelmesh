@@ -1,0 +1,15 @@
+RatelMesh macOS third-party notices
+
+wireguard-go
+  Version: v0.0.0-20260522210424-ecfc5a8d5446
+  Source: https://git.zx2c4.com/wireguard-go/
+  License: MIT (included under licenses/wireguard-go/LICENSE)
+
+wireguard-tools
+  Version: 1.0.20260223
+  Source archive: sources/wireguard-tools-1.0.20260223.tar.xz
+  Upstream: https://git.zx2c4.com/wireguard-tools/
+  License: GPL-2.0 (included under licenses/wireguard-tools/COPYING)
+
+The complete, unmodified source archive used to build the bundled `wg` binary
+is included with the installed product under `/usr/local/ratelmesh/share/sources`.

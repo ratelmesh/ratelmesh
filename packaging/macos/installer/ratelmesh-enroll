@@ -1,0 +1,124 @@
+#!/bin/sh
+set -eu
+
+LABEL=com.ratelmesh.daemon
+PLIST=/Library/LaunchDaemons/$LABEL.plist
+TARGET_COORD=https://control.ratelmesh.com
+LOG=/var/log/ratelmesh.log
+ENROLLED_MARKER=/var/db/ratelmesh/enrolled
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Run with: sudo /usr/local/ratelmesh/bin/ratelmesh-enroll" >&2
+    exit 1
+fi
+if [ ! -f "$PLIST" ]; then
+    echo "RatelMesh is not installed." >&2
+    exit 1
+fi
+
+CURRENT_COORD=$(plutil -extract EnvironmentVariables.RATELMESH_COORD raw -o - "$PLIST" 2>/dev/null || true)
+if [ -n "$CURRENT_COORD" ] && [ "$CURRENT_COORD" != "$TARGET_COORD" ]; then
+    echo "This Mac already targets $CURRENT_COORD; refusing to migrate an existing device." >&2
+    echo "Use the dedicated migration procedure so current users are not disconnected." >&2
+    exit 1
+fi
+
+if [ -t 0 ]; then
+    printf "One-use enrollment code: "
+    trap 'stty echo 2>/dev/null || true' EXIT HUP INT TERM
+    stty -echo
+    IFS= read -r CODE
+    stty echo
+    printf '\n'
+    trap - EXIT HUP INT TERM
+else
+    # The menu app sends the code through the private authorization pipe. Do
+    # not require a TTY, echo the code, or accept it as a process argument.
+    IFS= read -r CODE
+fi
+case "$CODE" in
+    ratelmesh-????-????-????) ;;
+    *) echo "Invalid code format. Expected ratelmesh-xxxx-xxxx-xxxx." >&2; exit 2 ;;
+esac
+
+BACKUP=$(mktemp "${TMPDIR:-/tmp}/ratelmesh-enroll-plist.XXXXXX")
+cp -p "$PLIST" "$BACKUP"
+chmod 600 "$BACKUP"
+finished=false
+
+stop_service() {
+    launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+    i=0
+    while launchctl print "system/$LABEL" >/dev/null 2>&1; do
+        i=$((i + 1))
+        [ "$i" -lt 40 ] || return 1
+        sleep 0.25
+    done
+}
+
+start_service() {
+    launchctl bootstrap system "$PLIST"
+    launchctl kickstart -k "system/$LABEL"
+}
+
+wait_running() {
+    i=0
+    while [ "$i" -lt 60 ]; do
+        status=$(curl -fsS --max-time 2 http://127.0.0.1:8088/localapi/status 2>/dev/null || true)
+        if echo "$status" | grep -q '"state":"Running"'; then
+            echo "$status"
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+restore() {
+    stop_service || true
+    cp -p "$BACKUP" "$PLIST"
+    chown root:wheel "$PLIST"
+    chmod 600 "$PLIST"
+    start_service >/dev/null 2>&1 || true
+}
+
+cleanup() {
+    if [ "$finished" != true ]; then
+        echo "Enrollment failed; restoring the previous launch configuration." >&2
+        restore
+        [ -f "$LOG" ] && tail -n 30 "$LOG" >&2 || true
+    fi
+    rm -f "$BACKUP"
+}
+trap cleanup EXIT HUP INT TERM
+
+stop_service
+plutil -replace EnvironmentVariables.RATELMESH_COORD -string "$TARGET_COORD" "$PLIST" 2>/dev/null || \
+    plutil -insert EnvironmentVariables.RATELMESH_COORD -string "$TARGET_COORD" "$PLIST"
+plutil -replace EnvironmentVariables.RATELMESH_AUTHKEY -string "$CODE" "$PLIST" 2>/dev/null || \
+    plutil -insert EnvironmentVariables.RATELMESH_AUTHKEY -string "$CODE" "$PLIST"
+chown root:wheel "$PLIST"
+chmod 600 "$PLIST"
+unset CODE
+start_service
+
+STATUS=$(wait_running) || exit 1
+
+# Registration has produced a renewable session token in the root-only state
+# directory. Remove the one-use code and prove that a clean restart works.
+stop_service
+plutil -remove EnvironmentVariables.RATELMESH_AUTHKEY "$PLIST"
+chmod 600 "$PLIST"
+start_service
+STATUS=$(wait_running) || exit 1
+
+finished=true
+mkdir -p "$(dirname "$ENROLLED_MARKER")"
+: >"$ENROLLED_MARKER"
+chown root:wheel "$ENROLLED_MARKER"
+chmod 644 "$ENROLLED_MARKER"
+trap - EXIT HUP INT TERM
+rm -f "$BACKUP"
+echo "RatelMesh enrollment completed."
+echo "$STATUS"

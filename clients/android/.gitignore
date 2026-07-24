@@ -1,0 +1,8 @@
+.gradle/
+local.properties
+**/build/
+app/libs/ratelmesh-mobile.aar
+app/libs/ratelmeshmobile-sources.jar
+*.jks
+*.keystore
+keystore.properties

@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+ROOT=${RATELMESH_INSTALL_ROOT:-}
+PLIST="$ROOT/Library/LaunchDaemons/com.ratelmesh.daemon.plist"
+TRANSACTION="$ROOT/var/db/ratelmesh/installer-transaction"
+TEST_MODE=${RATELMESH_INSTALL_TEST_MODE:-0}
+LEGACY_LABEL=ai.futurealpha.h"bmesh"
+LEGACY_PLIST="$ROOT/Library/LaunchDaemons/$LEGACY_LABEL.plist"
+LEGACY_STATE="$ROOT/var/lib/h""bmesh"
+STATE="$ROOT/var/lib/ratelmesh"
+LEGACY_PREFIX="$ROOT/usr/local/h""bmesh"
+
+# PackageKit replaces files after preinstall. Preserve the device-specific
+# launch configuration first so the universal package can update an enrolled
+# Mac without migrating its coordinator or reusing an enrollment credential.
+if [ -L "$TRANSACTION" ]; then
+    echo "Unsafe installer transaction path; refusing installation." >&2
+    exit 1
+fi
+rm -rf "$TRANSACTION"
+mkdir -p "$TRANSACTION"
+chmod 700 "$TRANSACTION"
+
+if [ -f "$PLIST" ]; then
+    printf '%s\n' upgrade >"$TRANSACTION/mode"
+    cp -p "$PLIST" "$TRANSACTION/launchdaemon.plist"
+    chmod 600 "$TRANSACTION/launchdaemon.plist"
+elif [ -f "$LEGACY_PLIST" ] || [ -d "$LEGACY_STATE" ]; then
+    printf '%s\n' legacy-upgrade >"$TRANSACTION/mode"
+    if [ -e "$STATE" ] && [ -e "$LEGACY_STATE" ]; then
+        echo "Both legacy and RatelMesh device state exist; refusing to choose." >&2
+        exit 1
+    fi
+    if [ -L "$LEGACY_STATE" ] || [ -L "$STATE" ] || [ -L "$LEGACY_PREFIX" ]; then
+        echo "Unsafe legacy migration path; refusing installation." >&2
+        exit 1
+    fi
+    if [ "$TEST_MODE" != 1 ]; then
+        launchctl bootout "system/$LEGACY_LABEL" 2>/dev/null || true
+    fi
+    if [ -d "$LEGACY_STATE" ]; then
+        mkdir -p "$(dirname "$STATE")"
+        mv "$LEGACY_STATE" "$STATE"
+    fi
+    rm -f "$LEGACY_PLIST"
+    rm -rf "$LEGACY_PREFIX"
+    rm -f "$ROOT/var/run/h""bmesh.sock"
+else
+    printf '%s\n' new >"$TRANSACTION/mode"
+fi

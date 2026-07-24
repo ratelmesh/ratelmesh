@@ -1,0 +1,7 @@
+RatelMesh.xcodeproj/
+.build/
+Frameworks/*.xcframework/
+DerivedData/
+Dependencies/
+build*/
+*.xcresult
