@@ -58,3 +58,10 @@ to the private service implementation cannot remain recoverable in Git history.
 
 Official downloads and documentation are available at
 [ratelmesh.com](https://ratelmesh.com/).
+
+## License
+
+RatelMesh client source is licensed under the
+[Apache License 2.0](LICENSE). Third-party components remain under their
+respective licenses; macOS runtime notices are listed in
+[`packaging/macos/THIRD-PARTY-NOTICES.txt`](packaging/macos/THIRD-PARTY-NOTICES.txt).
