@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const windowsPowerShellPath = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+
 // Platform primitives for the real engine. Linux uses `ip` + kernel WireGuard;
 // macOS uses `route`/`ifconfig` + the wireguard-go userspace binary on a
 // kernel-assigned utunN. Windows delegates tunnel ownership to the official
@@ -368,7 +370,7 @@ func routeGet(addr netip.Addr) (dev string, via netip.Addr, ok bool) {
 		// for both route and interface metrics. Emit a deliberately tiny,
 		// locale-independent record for Go to parse.
 		script := fmt.Sprintf("$r = Find-NetRoute -RemoteIPAddress '%s' | Select-Object -First 1; if ($null -eq $r) { exit 1 }; Write-Output ($r.InterfaceIndex.ToString() + '|' + $r.NextHop)", addr.String())
-		out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+		out, err := exec.Command(windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-Command", script).Output()
 		if err != nil {
 			return "", netip.Addr{}, false
 		}
@@ -402,7 +404,7 @@ func windowsPhysicalDefaultPath() (netip.Addr, string) {
 		"$r = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne '%s' } | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1; if ($null -eq $r) { exit 1 }; Write-Output ($r.InterfaceIndex.ToString() + '|' + $r.NextHop)",
 		WindowsTunnelName,
 	)
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := exec.Command(windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return netip.Addr{}, ""
 	}
@@ -433,20 +435,21 @@ func runQuiet(name string, args ...string) error {
 }
 
 // findWindowsWireGuardBinary locates a WireGuard for Windows binary
-// ("wireguard" manager or "wg"): PATH first, then the canonical install
-// directory, which the installer does not add to PATH by default.
+// ("wireguard" manager or "wg"). Prefer the canonical, administrator-owned
+// install directory before consulting PATH, which may contain user-writable
+// entries in a misconfigured service environment.
 func findWindowsWireGuardBinary(name string) (string, error) {
-	if path, err := exec.LookPath(name + ".exe"); err == nil {
-		return path, nil
-	}
-	if path, err := exec.LookPath(name); err == nil {
-		return path, nil
-	}
 	if programFiles := os.Getenv("ProgramFiles"); programFiles != "" {
 		path := filepath.Join(programFiles, "WireGuard", name+".exe")
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path, nil
 		}
+	}
+	if path, err := exec.LookPath(name + ".exe"); err == nil {
+		return path, nil
+	}
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
 	}
 	return "", fmt.Errorf("wgengine: %s.exe was not found in PATH or Program Files\\WireGuard (install WireGuard for Windows)", name)
 }

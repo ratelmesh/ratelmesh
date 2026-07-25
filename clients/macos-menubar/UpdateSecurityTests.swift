@@ -1,8 +1,9 @@
+import CryptoKit
 import Foundation
 
 @main
 private struct UpdateSecurityTests {
-    static func main() throws {
+    static func main() async throws {
         guard CommandLine.arguments.count == 6 else { throw TestFailure.arguments }
         let manifestURL = URL(fileURLWithPath: CommandLine.arguments[1])
         let publicKey = CommandLine.arguments[2]
@@ -141,7 +142,272 @@ private struct UpdateSecurityTests {
             // Expected.
         }
 
+        do {
+            try UpdateSecurity.verify(
+                manifest,
+                publicKeyBase64: publicKey,
+                pqPublicKeyBase64: "",
+                pqVerifierURL: verifierURL
+            )
+            throw TestFailure.invalidPQKeyAccepted
+        } catch UpdateSecurityError.invalidPQSignature {
+            // Expected.
+        }
+
+        let missingPQSignature = UpdateManifest(
+            schema: manifest.schema,
+            platform: manifest.platform,
+            version: manifest.version,
+            minimumSystemVersion: manifest.minimumSystemVersion,
+            url: manifest.url,
+            sha256: manifest.sha256,
+            size: manifest.size,
+            publishedAt: manifest.publishedAt,
+            signature: manifest.signature,
+            pqSignature: nil
+        )
+        do {
+            try verify(missingPQSignature)
+            throw TestFailure.invalidPQSignatureAccepted
+        } catch UpdateSecurityError.invalidPQSignature {
+            // Expected.
+        }
+
+        guard let pqSignature = manifest.pqSignature,
+              var badPQSignatureBytes = Data(base64Encoded: pqSignature)
+        else { throw TestFailure.invalidPQSignatureAccepted }
+        badPQSignatureBytes[badPQSignatureBytes.startIndex] ^= 1
+        let badPQSignature = UpdateManifest(
+            schema: manifest.schema,
+            platform: manifest.platform,
+            version: manifest.version,
+            minimumSystemVersion: manifest.minimumSystemVersion,
+            url: manifest.url,
+            sha256: manifest.sha256,
+            size: manifest.size,
+            publishedAt: manifest.publishedAt,
+            signature: manifest.signature,
+            pqSignature: badPQSignatureBytes.base64EncodedString()
+        )
+        do {
+            try verify(badPQSignature)
+            throw TestFailure.invalidPQSignatureAccepted
+        } catch UpdateSecurityError.invalidPQSignature {
+            // Expected.
+        }
+
+        let downgradePrivateKey = Curve25519.Signing.PrivateKey()
+        let unsignedDowngrade = UpdateManifest(
+            schema: 1,
+            platform: manifest.platform,
+            version: manifest.version,
+            minimumSystemVersion: manifest.minimumSystemVersion,
+            url: manifest.url,
+            sha256: manifest.sha256,
+            size: manifest.size,
+            publishedAt: manifest.publishedAt,
+            signature: "",
+            pqSignature: nil
+        )
+        let downgrade = UpdateManifest(
+            schema: unsignedDowngrade.schema,
+            platform: unsignedDowngrade.platform,
+            version: unsignedDowngrade.version,
+            minimumSystemVersion: unsignedDowngrade.minimumSystemVersion,
+            url: unsignedDowngrade.url,
+            sha256: unsignedDowngrade.sha256,
+            size: unsignedDowngrade.size,
+            publishedAt: unsignedDowngrade.publishedAt,
+            signature: try downgradePrivateKey.signature(
+                for: unsignedDowngrade.canonicalData
+            ).base64EncodedString(),
+            pqSignature: nil
+        )
+        do {
+            try UpdateSecurity.verify(
+                downgrade,
+                publicKeyBase64: downgradePrivateKey.publicKey.rawRepresentation.base64EncodedString()
+            )
+            throw TestFailure.schemaDowngradeAccepted
+        } catch UpdateSecurityError.malformedManifest {
+            // Expected: Ed25519-valid legacy manifests cannot bypass ML-DSA.
+        }
+
+        try await testBoundedTransfers()
+        try testAtomicCacheReplacementPreservesOldPackage(
+            packageURL: packageURL,
+            manifest: manifest
+        )
+
         print("macOS updater security tests passed")
+    }
+
+    private static func testBoundedTransfers() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StreamingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let request = URLRequest(
+            url: URL(string: "https://download.ratelmesh.com/download/test")!
+        )
+
+        StreamingURLProtocol.response = .init(
+            headers: [:],
+            chunks: [Data(repeating: 1, count: 8), Data([2])]
+        )
+        do {
+            _ = try await BoundedHTTPTransfer.data(for: request, using: session, limit: 8)
+            throw TestFailure.chunkedOversizeAccepted
+        } catch let failure as TestFailure {
+            throw failure
+        } catch {
+            // Expected: an unbounded/chunked body is cancelled at byte 9.
+        }
+
+        StreamingURLProtocol.response = .init(
+            headers: ["Content-Length": "1"],
+            chunks: [Data(repeating: 1, count: 9)]
+        )
+        do {
+            _ = try await BoundedHTTPTransfer.download(for: request, using: session, limit: 8)
+            throw TestFailure.lyingLengthAccepted
+        } catch let failure as TestFailure {
+            throw failure
+        } catch {
+            // Expected: the signed byte ceiling overrides a lying header.
+        }
+
+        StreamingURLProtocol.response = .init(
+            headers: ["Content-Length": "9"],
+            chunks: []
+        )
+        do {
+            _ = try await BoundedHTTPTransfer.data(for: request, using: session, limit: 8)
+            throw TestFailure.declaredOversizeAccepted
+        } catch let failure as TestFailure {
+            throw failure
+        } catch {
+            // Expected: oversized declared bodies are rejected before reading.
+        }
+
+        StreamingURLProtocol.response = .init(
+            headers: ["Content-Length": "8"],
+            chunks: [Data(repeating: 1, count: 8)]
+        )
+        let (data, _) = try await BoundedHTTPTransfer.data(for: request, using: session, limit: 8)
+        guard data.count == 8 else { throw TestFailure.boundedTransfer }
+    }
+
+    private static func testAtomicCacheReplacementPreservesOldPackage(
+        packageURL: URL,
+        manifest: UpdateManifest
+    ) throws {
+        let cacheRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ratelmesh-cache-replace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+        let fileName = "RatelMesh-macOS-\(manifest.version)-universal.pkg"
+        let destination = cacheRoot.appendingPathComponent(fileName)
+        let oldBytes = Data("previous verified package".utf8)
+        try oldBytes.write(to: destination, options: .atomic)
+        let oldHash = try UpdateSecurity.sha256(of: destination)
+
+        do {
+            _ = try AtomicPackageCache.install(
+                verifiedPackage: packageURL,
+                in: cacheRoot,
+                fileName: fileName,
+                expectedSize: manifest.size,
+                expectedSHA256: manifest.sha256,
+                replace: { _, _ in throw InjectedFailure.replace }
+            )
+            throw TestFailure.replaceFailureAccepted
+        } catch InjectedFailure.replace {
+            // Expected: replacement fails before the atomic rename.
+        }
+
+        guard try Data(contentsOf: destination) == oldBytes,
+              try UpdateSecurity.sha256(of: destination) == oldHash
+        else {
+            throw TestFailure.oldPackageChanged
+        }
+        let remaining = try FileManager.default.contentsOfDirectory(
+            at: cacheRoot,
+            includingPropertiesForKeys: nil
+        )
+        guard remaining.map(\.lastPathComponent) == [fileName] else {
+            throw TestFailure.cacheCandidateLeaked
+        }
+    }
+}
+
+private final class StreamingURLProtocol: URLProtocol, @unchecked Sendable {
+    struct Response {
+        let headers: [String: String]
+        let chunks: [Data]
+    }
+
+    private static let responseStore = ResponseStore()
+    static var response: Response {
+        get { responseStore.get() }
+        set { responseStore.set(newValue) }
+    }
+    private let stopLock = NSLock()
+    private var stopped = false
+
+    override class func canInit(with _: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let configured = Self.response
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: 200,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: configured.headers
+              )
+        else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        for chunk in configured.chunks where !isStopped {
+            client?.urlProtocol(self, didLoad: chunk)
+        }
+        if !isStopped {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {
+        stopLock.lock()
+        stopped = true
+        stopLock.unlock()
+    }
+
+    private var isStopped: Bool {
+        stopLock.lock()
+        defer { stopLock.unlock() }
+        return stopped
+    }
+}
+
+private final class ResponseStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var response = StreamingURLProtocol.Response(headers: [:], chunks: [])
+
+    func get() -> StreamingURLProtocol.Response {
+        lock.lock()
+        defer { lock.unlock() }
+        return response
+    }
+
+    func set(_ response: StreamingURLProtocol.Response) {
+        lock.lock()
+        self.response = response
+        lock.unlock()
     }
 }
 
@@ -156,5 +422,19 @@ private enum TestFailure: Error {
     case unsafeURLAccepted
     case invalidKeyAccepted
     case invalidSignatureAccepted
+    case invalidPQKeyAccepted
+    case invalidPQSignatureAccepted
+    case schemaDowngradeAccepted
+    case chunkedOversizeAccepted
+    case lyingLengthAccepted
+    case declaredOversizeAccepted
+    case boundedTransfer
+    case replaceFailureAccepted
+    case oldPackageChanged
+    case cacheCandidateLeaked
     case failureClassification
+}
+
+private enum InjectedFailure: Error {
+    case replace
 }

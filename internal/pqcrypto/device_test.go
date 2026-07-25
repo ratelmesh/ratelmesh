@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 func TestMLKEMSessionProducesSameWireGuardPSK(t *testing.T) {

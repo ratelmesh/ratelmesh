@@ -1,31 +1,33 @@
 import Foundation
+import os
 
 private final class UpdateFeedProtocol: URLProtocol {
-    private static let lock = NSLock()
-    private static var responseData = Data()
-    private static var requestCount = 0
+    private struct State: Sendable {
+        var responseData = Data()
+        var requestCount = 0
+    }
+
+    private static let state = OSAllocatedUnfairLock(initialState: State())
 
     static func configure(with data: Data) {
-        lock.lock()
-        responseData = data
-        requestCount = 0
-        lock.unlock()
+        state.withLock {
+            $0.responseData = data
+            $0.requestCount = 0
+        }
     }
 
     static func count() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return requestCount
+        state.withLock { $0.requestCount }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.lock.lock()
-        Self.requestCount += 1
-        let data = Self.responseData
-        Self.lock.unlock()
+        let data = Self.state.withLock {
+            $0.requestCount += 1
+            return $0.responseData
+        }
 
         let response = HTTPURLResponse(
             url: URL(string: "https://download.ratelmesh.com/download/macos/latest.json")!,
@@ -52,6 +54,20 @@ private struct UpdateSchedulerTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [UpdateFeedProtocol.self]
         let session = URLSession(configuration: configuration)
+        try await withThrowingTaskGroup(of: Data.self) { group in
+            for requestID in 0..<16 {
+                group.addTask {
+                    let url = URL(string: "https://download.ratelmesh.com/download/macos/latest.json?request=\(requestID)")!
+                    return try await session.data(from: url).0
+                }
+            }
+            for try await data in group where data != manifestData {
+                throw SchedulerFailure.concurrentState
+            }
+        }
+        guard UpdateFeedProtocol.count() == 16 else { throw SchedulerFailure.concurrentState }
+        UpdateFeedProtocol.configure(with: manifestData)
+
         let suite = "com.ratelmesh.daemon.update-scheduler.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { throw SchedulerFailure.defaults }
         defaults.set(false, forKey: "updates.automatic")
@@ -95,4 +111,5 @@ private enum SchedulerFailure: Error {
     case defaults
     case disabledCheck
     case noRepeatCheck
+    case concurrentState
 }

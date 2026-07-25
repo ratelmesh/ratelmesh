@@ -3,12 +3,47 @@ import Foundation
 @main
 private struct UpdateStoreIntegrationTests {
     static func main() async throws {
-        guard CommandLine.arguments.count == 3,
+        switch CommandLine.arguments.dropFirst().first {
+        case "verify-manifest":
+            guard CommandLine.arguments.count == 6 else {
+                throw IntegrationFailure.arguments
+            }
+            let manifest = try verifiedManifest(
+                at: URL(fileURLWithPath: CommandLine.arguments[2]),
+                publicKey: CommandLine.arguments[3],
+                pqPublicKey: CommandLine.arguments[4],
+                pqVerifierURL: URL(fileURLWithPath: CommandLine.arguments[5])
+            )
+            print(manifest.version)
+        case "run":
+            try await run()
+        default:
+            throw IntegrationFailure.arguments
+        }
+    }
+
+    @MainActor
+    private static func run() async throws {
+        guard CommandLine.arguments.count == 8,
               let feedURL = URL(string: "https://download.ratelmesh.com/download/macos/latest.json")
         else { throw IntegrationFailure.arguments }
 
-        let publicKey = CommandLine.arguments[1]
-        let cacheRoot = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+        let manifestURL = URL(fileURLWithPath: CommandLine.arguments[2])
+        let publicKey = CommandLine.arguments[3]
+        let pqPublicKey = CommandLine.arguments[4]
+        let pqVerifierURL = URL(fileURLWithPath: CommandLine.arguments[5])
+        let expectedVersion = CommandLine.arguments[6]
+        let cacheRoot = URL(fileURLWithPath: CommandLine.arguments[7], isDirectory: true)
+        let expectedManifest = try verifiedManifest(
+            at: manifestURL,
+            publicKey: publicKey,
+            pqPublicKey: pqPublicKey,
+            pqVerifierURL: pqVerifierURL
+        )
+        guard expectedManifest.version == expectedVersion else {
+            throw IntegrationFailure.manifestChanged
+        }
+
         let suite = "com.ratelmesh.daemon.update-integration.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { throw IntegrationFailure.defaults }
         defaults.set(false, forKey: "updates.automatic")
@@ -21,13 +56,15 @@ private struct UpdateStoreIntegrationTests {
             defaults: defaults,
             feedURL: feedURL,
             publicKey: publicKey,
-            currentVersion: "0.1.24",
+            pqPublicKey: pqPublicKey,
+            pqVerifierURL: pqVerifierURL,
+            currentVersion: "0.0.0",
             cacheRoot: cacheRoot,
             scheduleAutomaticCheck: false
         )
         await updater.check(manual: true)
         guard updater.phase == .available,
-              updater.manifest?.version == "0.2.0"
+              updater.manifest == expectedManifest
         else { throw IntegrationFailure.updateNotFound }
 
         await updater.downloadAvailableUpdate()
@@ -42,7 +79,9 @@ private struct UpdateStoreIntegrationTests {
             defaults: defaults,
             feedURL: feedURL,
             publicKey: publicKey,
-            currentVersion: "0.2.0",
+            pqPublicKey: pqPublicKey,
+            pqVerifierURL: pqVerifierURL,
+            currentVersion: expectedVersion,
             cacheRoot: cacheRoot,
             scheduleAutomaticCheck: false
         )
@@ -50,6 +89,33 @@ private struct UpdateStoreIntegrationTests {
         guard current.phase == .upToDate else { throw IntegrationFailure.currentVersion }
 
         print("live macOS updater integration tests passed")
+    }
+
+    private static func verifiedManifest(
+        at manifestURL: URL,
+        publicKey: String,
+        pqPublicKey: String,
+        pqVerifierURL: URL
+    ) throws -> UpdateManifest {
+        guard FileManager.default.isExecutableFile(atPath: pqVerifierURL.path) else {
+            throw IntegrationFailure.pqVerifier
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: manifestURL.path)
+        guard let size = attributes[.size] as? NSNumber, size.intValue <= 65_536 else {
+            throw IntegrationFailure.manifestSize
+        }
+        let data = try Data(contentsOf: manifestURL, options: .mappedIfSafe)
+        guard !data.isEmpty, data.count <= 65_536 else {
+            throw IntegrationFailure.manifestSize
+        }
+        let manifest = try JSONDecoder().decode(UpdateManifest.self, from: data)
+        try UpdateSecurity.verify(
+            manifest,
+            publicKeyBase64: publicKey,
+            pqPublicKeyBase64: pqPublicKey,
+            pqVerifierURL: pqVerifierURL
+        )
+        return manifest
     }
 }
 
@@ -59,4 +125,7 @@ private enum IntegrationFailure: Error {
     case updateNotFound
     case download
     case currentVersion
+    case manifestChanged
+    case manifestSize
+    case pqVerifier
 }

@@ -20,19 +20,20 @@ import (
 	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/ratelmesh/ratelmesh/internal/control"
-	"github.com/ratelmesh/ratelmesh/internal/dns"
-	"github.com/ratelmesh/ratelmesh/internal/exitstack"
-	"github.com/ratelmesh/ratelmesh/internal/georegion"
-	"github.com/ratelmesh/ratelmesh/internal/magicsock"
-	"github.com/ratelmesh/ratelmesh/internal/netguard"
-	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
-	"github.com/ratelmesh/ratelmesh/internal/relay"
-	"github.com/ratelmesh/ratelmesh/internal/routing"
-	"github.com/ratelmesh/ratelmesh/internal/sign"
-	"github.com/ratelmesh/ratelmesh/internal/transport"
-	"github.com/ratelmesh/ratelmesh/internal/types"
-	"github.com/ratelmesh/ratelmesh/internal/wgengine"
+	"github.com/shan25519/ratelmesh/internal/control"
+	"github.com/shan25519/ratelmesh/internal/dns"
+	"github.com/shan25519/ratelmesh/internal/exitstack"
+	"github.com/shan25519/ratelmesh/internal/georegion"
+	"github.com/shan25519/ratelmesh/internal/magicsock"
+	"github.com/shan25519/ratelmesh/internal/netguard"
+	"github.com/shan25519/ratelmesh/internal/pqcrypto"
+	"github.com/shan25519/ratelmesh/internal/relay"
+	"github.com/shan25519/ratelmesh/internal/remoteaccess"
+	"github.com/shan25519/ratelmesh/internal/routing"
+	"github.com/shan25519/ratelmesh/internal/sign"
+	"github.com/shan25519/ratelmesh/internal/transport"
+	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/wgengine"
 )
 
 // meshCIDR is the mesh address space; exit NAT masquerades traffic from it.
@@ -127,9 +128,20 @@ type Config struct {
 	// coordinator host:443 when empty. See internal/control/camotransport.go.
 	CoordTransport string
 	CoordFrontDoor string
-	Engine         wgengine.Engine
-	Enforcer       netguard.Enforcer
-	Logger         *slog.Logger
+	// RemoteServiceDetector probes only target-local, explicitly allowlisted
+	// listeners when the Tenant policy enables remote access for this device.
+	// Nil uses the bounded standard detector.
+	RemoteServiceDetector RemoteServiceDetector
+	// RemoteAccessCandidates overrides the fixed platform defaults. Nil selects
+	// SSH/RDP/VNC standard ports; an explicit empty slice advertises none.
+	RemoteAccessCandidates []remoteaccess.Candidate
+	// RemoteAccessPolicyStore persists the highest authority-signed remote
+	// access policy accepted by this device. Nil creates a private file-backed
+	// store in StateDir when VerifyKey is configured.
+	RemoteAccessPolicyStore remoteaccess.PolicyFloorStore
+	Engine                  wgengine.Engine
+	Enforcer                netguard.Enforcer
+	Logger                  *slog.Logger
 }
 
 // Daemon is the long-running client: it maintains the control-plane connection,
@@ -173,6 +185,13 @@ type Daemon struct {
 	candidateAttempts map[types.Key]int
 	guard             netguard.Enforcer // kill-switch firewall enforcer
 	zone              *dns.Zone         // MagicDNS name->mesh IP (§3.1)
+	remotePolicyStore remoteaccess.PolicyFloorStore
+	remoteAccess      remoteAccessView
+	// remotePlatform is derived from the local executable's GOOS, never from
+	// coordinator-supplied Netmap metadata. It anchors managed firewall ports.
+	remotePlatform   remoteaccess.Platform
+	remoteExpiry     time.Time
+	remoteExpiryWake chan struct{}
 
 	dnsServer        *dns.Server // running MagicDNS server (nil if not enabled)
 	dnsSystemUpstrms []string    // resolvers to use when no exit is active
@@ -276,6 +295,13 @@ func New(cfg Config) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load physical machine identity: %w", err)
 	}
+	remotePolicyStore := cfg.RemoteAccessPolicyStore
+	if remotePolicyStore == nil && len(cfg.VerifyKey) > 0 {
+		remotePolicyStore, err = remoteaccess.NewFilePolicyFloorStore(cfg.StateDir, "remote-access-policy.json")
+		if err != nil {
+			return nil, fmt.Errorf("open remote access policy floor: %w", err)
+		}
+	}
 	var bootstrapNetmap types.Netmap
 	if cached, err := loadCachedNetmap(cfg.StateDir, cfg.CoordURL, st.PrivateKey, cfg.Role); err == nil {
 		bootstrapNetmap = cached
@@ -303,6 +329,8 @@ func New(cfg Config) (*Daemon, error) {
 		candidateAttempts: make(map[types.Key]int),
 		guard:             cfg.Enforcer,
 		zone:              dns.NewZone(""),
+		remotePolicyStore: remotePolicyStore,
+		remoteExpiryWake:  make(chan struct{}, 1),
 		relayed:           make(map[types.Key]bool),
 		directSince:       make(map[types.Key]time.Time),
 		relaySince:        make(map[types.Key]time.Time),
@@ -312,6 +340,9 @@ func New(cfg Config) (*Daemon, error) {
 		lastTx:            make(map[types.Key]int64),
 		unansweredTx:      make(map[types.Key]int64),
 		txDemandSince:     make(map[types.Key]time.Time),
+	}
+	if platform, ok := remoteAccessPlatformForGOOS(runtime.GOOS); ok {
+		d.remotePlatform = platform
 	}
 	d.client.SetNodeKey(st.PrivateKey)
 	d.client.SetMachineIdentity(machineIdentity)
@@ -343,6 +374,16 @@ func validateRoleConfig(cfg Config, goos string) error {
 	// user with a data plane that silently never comes up.
 	if goos == "windows" && cfg.KillSwitch && cfg.SplitTunnel != nil && len(cfg.SplitTunnel.DirectPrefixes()) > 0 {
 		return errors.New("on Windows, kill-switch cannot be combined with split-tunnel direct rules (the WireGuard /0 kill switch bypasses no routes)")
+	}
+	if cfg.RemoteAccessCandidates != nil {
+		platform, ok := remoteAccessPlatformForGOOS(goos)
+		if !ok {
+			if len(cfg.RemoteAccessCandidates) != 0 {
+				return errors.New("remote-access services are unsupported on this platform")
+			}
+		} else if _, err := remoteTargetCandidatePorts(cfg.RemoteAccessCandidates, platform); err != nil {
+			return fmt.Errorf("invalid remote-access candidates: %w", err)
+		}
 	}
 	return nil
 }
@@ -395,14 +436,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.refreshPortMapping(mapCtx)
 	mapCancel()
 	go d.portMappingLoop(ctx)
-	if d.cfg.KillSwitch {
-		defer func() {
-			if err := d.guard.Clear(); err != nil {
-				d.log.Warn("kill switch teardown failed", "err", err)
-			}
-		}()
-	}
+	remoteExpiryCtx, stopRemoteExpiry := context.WithCancel(ctx)
+	remoteExpiryDone := make(chan struct{})
+	go func() {
+		defer close(remoteExpiryDone)
+		d.remoteTargetExpiryLoop(remoteExpiryCtx)
+	}()
+	defer func() {
+		if err := d.guard.Clear(); err != nil {
+			d.log.Warn("managed firewall teardown failed", "err", err)
+		}
+	}()
 	defer d.engine.Down()
+	defer func() {
+		stopRemoteExpiry()
+		<-remoteExpiryDone
+	}()
 
 	// Best-effort disco responder for hole-punching. Skipped when the real WG
 	// data plane owns the ListenPort. If the port is taken (e.g. two stub daemons
@@ -596,7 +645,11 @@ func (d *Daemon) session(ctx context.Context) error {
 	for {
 		platform, locationRegion = d.deviceMetadata()
 		selectedExitID, activeExitID := d.reportedExitUsage()
-		resp, err := d.client.PollWithRuntime(ctx, regResp.NodeID, version, d.localEndpoints(), d.discoEndpoints(), platform, locationRegion, selectedExitID, activeExitID)
+		remoteServices, advertiseServices := d.detectRemoteServices(ctx, regResp.NodeID, platform)
+		if !advertiseServices {
+			remoteServices = nil
+		}
+		resp, err := d.client.PollWithRuntimeAndServices(ctx, regResp.NodeID, version, d.localEndpoints(), d.discoEndpoints(), platform, locationRegion, selectedExitID, activeExitID, remoteServices)
 		if err != nil {
 			return err
 		}
@@ -718,6 +771,32 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 			return false, fmt.Errorf("%w: version %d", ErrNetmapEquivocation, nm.Version)
 		}
 	}
+	remoteNow := time.Now()
+	remoteView := d.authenticateRemoteAccessNetmap(nm, remoteNow)
+	var remoteTarget remoteTargetPolicy
+	if d.remoteFirewallCapable() &&
+		(len(nm.RemoteAccessPolicyState.Payload) != 0 || d.guard.Current().RemoteEnforcement) {
+		var targetErr error
+		remoteTarget, targetErr = d.deriveRemoteTargetPolicy(nm, remoteNow)
+		if targetErr != nil {
+			// The returned policy is deliberately fail-closed. Keep applying
+			// the Mesh itself, but never keep an old allow rule on this error.
+			d.log.Warn("remote target policy rejected; applying closed boundary", "err", targetErr)
+		}
+	}
+	// Revoke the previously presented launchers before any fallible data-plane
+	// work. A newly accepted policy/grant view is committed only after the
+	// engine, routes and firewall accept the netmap, but a revocation must not
+	// remain hidden behind an unrelated reconfiguration failure.
+	d.mu.Lock()
+	d.remoteAccess = remoteAccessView{services: make(map[remoteTargetKey][]remoteAuthorizedService)}
+	d.status.Self.RemoteAccessAllowed = false
+	d.status.Self.RemoteServices = nil
+	for i := range d.status.Peers {
+		d.status.Peers[i].RemoteAccessAllowed = false
+		d.status.Peers[i].RemoteServices = nil
+	}
+	d.mu.Unlock()
 
 	// Record the effective relay list (flag pin, else coord DERPMap) for the
 	// reconnect loop. If the currently-connected relay is no longer advertised
@@ -917,33 +996,60 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 	exitSelected := selectedExit != ""
 	priorPolicy := d.guard.Current()
 	desiredPolicy := d.killSwitchPolicy(exitSelected, peerTransportEndpoints, internetFallback, relays)
-	deferDisarm := d.cfg.KillSwitch && priorPolicy.Enabled && !desiredPolicy.Enabled
-	policyNeeded := d.cfg.KillSwitch && (priorPolicy.Enabled || desiredPolicy.Enabled)
-	policyApplied := false
-	if policyNeeded && !deferDisarm {
-		if err := d.applyKillSwitchPolicy(desiredPolicy); err != nil {
+	var err error
+	desiredPolicy, err = d.composeRemoteTargetPolicy(desiredPolicy, remoteTarget, nm.Self)
+	if err != nil {
+		// A malformed replacement must not strand a predecessor's temporary
+		// allow. Keep its deny boundary and EXIT posture, but remove all grants.
+		emergencyClosed := priorPolicy
+		emergencyClosed.RemoteAccessRules = nil
+		if !reflect.DeepEqual(priorPolicy, emergencyClosed) {
+			if closeErr := d.applyKillSwitchPolicy(emergencyClosed); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}
+		d.setRemoteTargetExpiry(time.Now().Add(time.Second))
+		rollbackCandidateState()
+		return false, fmt.Errorf("compose managed firewall policy: %w", err)
+	}
+	// When disarming EXIT protection, preserve the predecessor's output rules
+	// until the engine has removed full-tunnel routes. Remote grant revocations
+	// are still installed immediately and survive unrelated engine failures.
+	deferDisarm := priorPolicy.Enabled && !desiredPolicy.Enabled
+	intermediatePolicy := desiredPolicy
+	if deferDisarm {
+		copyExitPolicy(&intermediatePolicy, priorPolicy)
+	}
+	firewallApplied := false
+	if !reflect.DeepEqual(priorPolicy, intermediatePolicy) {
+		if err := d.applyKillSwitchPolicy(intermediatePolicy); err != nil {
 			rollbackCandidateState()
 			return false, err
 		}
-		policyApplied = true
+		firewallApplied = true
 	}
+	d.setRemoteTargetExpiry(remoteTarget.NearestExpiry)
 	if err := d.engine.Reconfigure(cfg); err != nil {
-		if policyApplied {
-			if rollbackErr := d.applyKillSwitchPolicy(priorPolicy); rollbackErr != nil {
-				d.log.Error("kill switch rollback after data-plane failure failed", "err", rollbackErr)
+		if firewallApplied {
+			rollbackPolicy := desiredPolicy
+			copyExitPolicy(&rollbackPolicy, priorPolicy)
+			if !reflect.DeepEqual(d.guard.Current(), rollbackPolicy) {
+				if rollbackErr := d.applyKillSwitchPolicy(rollbackPolicy); rollbackErr != nil {
+					d.log.Error("managed firewall rollback after data-plane failure failed", "err", rollbackErr)
+				}
 			}
 		}
 		rollbackCandidateState()
 		return false, err
 	}
-	if deferDisarm {
+	if !reflect.DeepEqual(intermediatePolicy, desiredPolicy) {
 		if err := d.applyKillSwitchPolicy(desiredPolicy); err != nil {
 			// Keep the predecessor's fail-closed policy armed. The engine changed,
 			// but cleartext egress remains blocked and the caller can safely retry.
 			return false, err
 		}
 	}
-	killOn := d.cfg.KillSwitch && desiredPolicy.Enabled
+	killOn := desiredPolicy.Enabled
 	if nm.Self.Capabilities.Exit || nm.Self.Role == types.RoleExit {
 		d.enableExitNAT()
 	} else {
@@ -997,8 +1103,15 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 		InternetFallback: internetFallback,
 		DNS:              d.effectiveDNS(exitRouted),
 	}
+	st.Self.RemoteAccessAllowed = remoteView.selfAllowed
+	if !st.Self.RemoteAccessAllowed {
+		st.Self.RemoteServices = nil
+	}
+	remoteStatusNow := time.Now()
 	for _, p := range nm.Peers {
 		ps := peerStatusFromNode(p)
+		ps.RemoteServices = remoteView.servicesFor(p, remoteStatusNow)
+		ps.RemoteAccessAllowed = len(ps.RemoteServices) > 0
 		if pt := d.currentPathType(p.Key); pt != "" {
 			ps.PathType = pt
 		}
@@ -1025,6 +1138,7 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 	st.ExitTrafficVerified = trafficVerified
 	d.mu.Lock()
 	d.lastNetmap = nm
+	d.remoteAccess = remoteView
 	d.exitPeerKey = activeExitKey
 	d.exitRouted = exitRouted
 	d.exitTrafficAfter = trafficAfter
@@ -1931,15 +2045,7 @@ func (d *Daemon) recordDataPlaneHealth(healthErr error) {
 	// A recovered macOS userspace tunnel receives a fresh utun name. Reapply the
 	// guard policy immediately so its pass rule follows that interface instead
 	// of remaining pinned to the dead predecessor.
-	d.mu.Lock()
-	nm := d.lastNetmap
-	preferred := d.preferredExit
-	d.mu.Unlock()
-	exitSelected, exitEndpoints := selectedExit(nm, preferred)
-	killOn := d.updateKillSwitch(exitSelected, exitEndpoints)
-	d.mu.Lock()
-	d.status.KillSwitch = killOn
-	d.mu.Unlock()
+	d.refreshKillSwitch()
 	d.log.Info("automatic data plane recovery completed")
 }
 
@@ -1971,15 +2077,7 @@ func (d *Daemon) recoverNetworkPath(pathErr error) {
 		d.log.Error("network-path data plane recovery failed", "err", err)
 		return
 	}
-	d.mu.Lock()
-	nm := d.lastNetmap
-	preferred := d.preferredExit
-	d.mu.Unlock()
-	exitSelected, exitEndpoints := selectedExit(nm, preferred)
-	killOn := d.updateKillSwitch(exitSelected, exitEndpoints)
-	d.mu.Lock()
-	d.status.KillSwitch = killOn
-	d.mu.Unlock()
+	d.refreshKillSwitch()
 	d.log.Info("network-path data plane recovery completed")
 }
 
@@ -2287,46 +2385,120 @@ func (d *Daemon) livePeerEndpoints() []string {
 	return endpoints
 }
 
-// updateKillSwitch arms or disarms the fail-closed firewall. It stays armed
-// whenever an exit is selected, including handshake recovery, so loss of either
-// IPv4 or IPv6 tunnel routes cannot fall back to the physical network.
-func (d *Daemon) updateKillSwitch(exitSelected bool, exitEndpoints []string) bool {
-	// If the kill-switch feature was never enabled, do not touch the host firewall
-	// at all. Applying even a "disabled" policy makes the macOS pf enforcer reload
-	// the global ruleset on every netmap update, which clobbers unrelated pf state
-	// — e.g. an exit node's NAT rule (managed by exitstack). Only manage the
-	// firewall when the user actually asked for the kill switch.
-	if !d.cfg.KillSwitch {
-		return false
+// refreshKillSwitch arms or disarms the fail-closed firewall from the latest
+// authoritative daemon state. It stays armed whenever an exit is selected,
+// including handshake recovery, so loss of either IPv4 or IPv6 tunnel routes
+// cannot fall back to the physical network.
+func (d *Daemon) refreshKillSwitch() bool {
+	if d.guard == nil {
+		return d.recordKillSwitchStatus(false)
 	}
+	for attempt := 0; attempt < 3; attempt++ {
+		// Potentially blocking engine and DNS work stays outside applyMu. Snapshot
+		// the inputs first, prepare the EXIT half, then accept it only if those
+		// authoritative inputs are unchanged after entering the transaction.
+		snapshot := d.killSwitchRefreshSnapshot()
+		liveEndpoints := d.livePeerEndpoints()
+		exitSelected, exitEndpoints := selectedExit(snapshot.netmap, snapshot.preferredExit)
+		for _, peer := range snapshot.netmap.Peers {
+			exitEndpoints = append(exitEndpoints, peer.Endpoints...)
+		}
+		exitEndpoints = append(exitEndpoints, liveEndpoints...)
+		policy := d.killSwitchPolicyForRelay(
+			exitSelected, exitEndpoints, snapshot.internetFallback,
+			snapshot.relaySpecs, snapshot.relayAddr,
+		)
+
+		d.applyMu.Lock()
+		if !d.killSwitchRefreshStillCurrent(snapshot) {
+			d.applyMu.Unlock()
+			continue
+		}
+		current := d.guard.Current()
+		copyRemotePolicy(&policy, current)
+		if namer, ok := d.engine.(wgengine.InterfaceNamer); ok && namer.InterfaceName() != "" && policy.Active() {
+			policy.TunnelInterface = namer.InterfaceName()
+		}
+		if reflect.DeepEqual(current, policy) {
+			enabled := d.recordKillSwitchStatus(policy.Enabled)
+			d.applyMu.Unlock()
+			return enabled
+		}
+		if err := d.applyKillSwitchPolicy(policy); err != nil {
+			d.recordKillSwitchStatus(false)
+			d.applyMu.Unlock()
+			return false
+		}
+		enabled := d.recordKillSwitchStatus(policy.Enabled)
+		d.applyMu.Unlock()
+		return enabled
+	}
+	d.log.Warn("kill switch refresh skipped because network intent kept changing")
+	d.applyMu.Lock()
+	enabled := d.recordKillSwitchStatus(d.guard.Current().Enabled)
+	d.applyMu.Unlock()
+	return enabled
+}
+
+type killSwitchRefreshState struct {
+	netmap           types.Netmap
+	preferredExit    string
+	internetFallback bool
+	relaySpecs       []string
+	relayAddr        netip.AddrPort
+}
+
+func (d *Daemon) killSwitchRefreshSnapshot() killSwitchRefreshState {
 	d.mu.Lock()
-	internetFallback := d.internetFallback
-	specs := append([]string(nil), d.relaySpecs...)
-	for _, peer := range d.lastNetmap.Peers {
-		exitEndpoints = append(exitEndpoints, peer.Endpoints...)
+	defer d.mu.Unlock()
+	nm := d.lastNetmap
+	nm.Peers = append([]types.Node(nil), nm.Peers...)
+	for i := range nm.Peers {
+		nm.Peers[i].Endpoints = append([]string(nil), nm.Peers[i].Endpoints...)
 	}
+	return killSwitchRefreshState{
+		netmap: nm, preferredExit: d.preferredExit, internetFallback: d.internetFallback,
+		relaySpecs: append([]string(nil), d.relaySpecs...), relayAddr: d.relayAddr,
+	}
+}
+
+func (d *Daemon) killSwitchRefreshStillCurrent(snapshot killSwitchRefreshState) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastNetmap.Version == snapshot.netmap.Version &&
+		d.preferredExit == snapshot.preferredExit &&
+		d.internetFallback == snapshot.internetFallback &&
+		d.relayAddr == snapshot.relayAddr &&
+		slices.Equal(d.relaySpecs, snapshot.relaySpecs)
+}
+
+// recordKillSwitchStatus runs before refreshKillSwitch releases applyMu, so a
+// newer netmap transaction cannot commit its firewall and status between those
+// writes and then be overwritten by a stale recovery result.
+func (d *Daemon) recordKillSwitchStatus(enabled bool) bool {
+	d.mu.Lock()
+	d.status.KillSwitch = enabled
 	d.mu.Unlock()
-	exitEndpoints = append(exitEndpoints, d.livePeerEndpoints()...)
-	policy := d.killSwitchPolicy(exitSelected, exitEndpoints, internetFallback, specs)
-	if err := d.applyKillSwitchPolicy(policy); err != nil {
-		return false
-	}
-	return policy.Enabled
+	return enabled
 }
 
 func (d *Daemon) killSwitchPolicy(exitSelected bool, exitEndpoints []string, internetFallback bool, specs []string) netguard.Policy {
 	d.mu.Lock()
 	relayAddr := d.relayAddr
 	d.mu.Unlock()
-	armed := !internetFallback && exitSelected
+	return d.killSwitchPolicyForRelay(exitSelected, exitEndpoints, internetFallback, specs, relayAddr)
+}
+
+func (d *Daemon) killSwitchPolicyForRelay(exitSelected bool, exitEndpoints []string, internetFallback bool, specs []string, relayAddr netip.AddrPort) netguard.Policy {
+	armed := d.cfg.KillSwitch && !internetFallback && exitSelected
+	if !armed {
+		return netguard.Policy{}
+	}
 	// Allow the relay's TCP port through the kill switch — the CONNECTED relay AND
 	// every candidate in the DERPMap/flag. If the bridge is down, the connected
 	// address is empty, so without the candidates the kill switch would block the
 	// very relay reconnection needed to restore the tunnel (security review §1).
-	var relayEndpoints []netip.AddrPort
-	if armed {
-		relayEndpoints = d.relayAllowEndpoints(relayAddr, specs)
-	}
+	relayEndpoints := d.relayAllowEndpoints(relayAddr, specs)
 	policy := netguard.Policy{
 		Enabled:          armed,
 		AllowCIDRs:       netguard.DefaultAllowCIDRs(),
@@ -2769,6 +2941,15 @@ func (d *Daemon) Status() Status {
 	s := d.status
 	s.State = d.state
 	s.Peers = append([]PeerStatus(nil), d.status.Peers...)
+	now := time.Now()
+	for i, peer := range d.lastNetmap.Peers {
+		if i >= len(s.Peers) {
+			break
+		}
+		services := d.remoteAccess.servicesFor(peer, now)
+		s.Peers[i].RemoteServices = services
+		s.Peers[i].RemoteAccessAllowed = len(services) > 0
+	}
 	s.ExitClients = append([]ExitClientStatus(nil), d.status.ExitClients...)
 	return s
 }

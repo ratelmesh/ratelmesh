@@ -25,6 +25,17 @@ for script in \
     fi
 done
 
+for arch in arm64 x86_64; do
+    xcrun swiftc -O -parse-as-library \
+        -strict-concurrency=complete -swift-version 6 -warnings-as-errors \
+        -target "$arch-apple-macos13.0" \
+        -o "$WORK/menu-strict-$arch" \
+        "$ROOT/clients/macos-menubar/MenuModels.swift" \
+        "$ROOT/clients/macos-menubar/EnrollmentSupport.swift" \
+        "$ROOT/clients/macos-menubar/RatelMeshMenuApp.swift" \
+        "$ROOT/clients/macos-menubar/UpdateSupport.swift"
+done
+
 xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
     -o "$WORK/menu-support-tests" \
     "$ROOT/clients/macos-menubar/MenuModels.swift" \

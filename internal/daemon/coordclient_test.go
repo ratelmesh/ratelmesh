@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/ratelmesh/ratelmesh/internal/wgengine"
+	"github.com/shan25519/ratelmesh/internal/wgengine"
 )
 
 func TestCoordFrontDoorDerivation(t *testing.T) {

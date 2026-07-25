@@ -27,11 +27,20 @@ installed protocol app; macOS uses the registered system/application handler.
 
 ## Security boundary
 
-This policy controls the official RatelMesh launch experience. It does not
-silently enable SSH, RDP or VNC on a target, install a server, create an account,
-or replace the mesh ACL. The target service must already be enabled and allowed
-by its operating-system firewall. Packet reachability remains governed by the
-Tenant ACL.
+This policy controls both the official RatelMesh launch experience and the
+temporary target-side network grant. On supported Linux and macOS targets, the
+daemon accepts only authority-signed target state and grants, then atomically
+allows the exact Mesh source, target and service port in the host firewall.
+Expiry and revocation remove that allow without waiting for another Netmap
+update. The deny boundary remains active while the target feature is enabled.
+Targets without a capable enforcement backend do not advertise secure target
+capability; Windows target enforcement is not yet supported.
+
+RatelMesh does not silently enable SSH, RDP or VNC, install a server, create an
+account or bypass the Tenant ACL. The target service must already be running.
+Opening a launcher cannot start it. Safe bounded service startup remains a
+separate, locally confirmed feature and is intentionally detect-only in this
+release.
 
 RatelMesh does not collect or persist protocol passwords. SSH keys and remote
 desktop credentials remain in the selected client, OS Keychain, Android

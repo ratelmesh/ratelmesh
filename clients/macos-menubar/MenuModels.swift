@@ -1,5 +1,13 @@
 import Foundation
 
+struct RemoteService: Codable, Equatable, Identifiable {
+    let kind: String
+    let port: UInt16
+    let targetMeshIp: String
+
+    var id: String { "\(kind)|\(port)|\(targetMeshIp)" }
+}
+
 struct Peer: Codable, Identifiable {
     let name: String
     let meshIP: String
@@ -8,6 +16,7 @@ struct Peer: Codable, Identifiable {
     let pathType: String
     let platform: String?
     let remoteAccessAllowed: Bool?
+    let remoteServices: [RemoteService]?
 
     var id: String { meshIP + "|" + name }
 }

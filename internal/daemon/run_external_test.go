@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/daemon"
+	"github.com/shan25519/ratelmesh/internal/daemon"
 )
 
 // runDaemon keeps test-owned state directories alive until the daemon has

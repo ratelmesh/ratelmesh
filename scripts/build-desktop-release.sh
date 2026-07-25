@@ -20,7 +20,9 @@ for arch in amd64 arm64; do
   mkdir -p "$linux"
   CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -tags wgreal -o "$linux/ratelmeshd" "$REPO/cmd/ratelmeshd"
   CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "$linux/ratelmesh" "$REPO/cmd/ratelmesh"
-  install -m 644 "$REPO/packaging/linux/ratelmeshd.service" "$linux/ratelmeshd.service"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "$linux/ratelmesh-relay" "$REPO/cmd/ratelmesh-relay"
+  install -m 644 "$REPO/deploy/systemd/ratelmeshd.service" "$linux/ratelmeshd.service"
+  install -m 644 "$REPO/deploy/tenant/relay/ratelmesh-relay.service" "$linux/ratelmesh-relay.service"
   install -m 644 "$REPO/clients/linux/README.md" "$linux/README.md"
   tar -C "$WORK" -czf "$OUTDIR/RatelMesh-Linux-$VERSION-$arch.tar.gz" "$(basename "$linux")"
 

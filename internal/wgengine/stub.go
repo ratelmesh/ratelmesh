@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // StubEngine is a rootless, no-network implementation of Engine. It records the

@@ -78,15 +78,10 @@ struct ContentView: View {
                                 Text("\(peer.meshIP) · \(peer.platform ?? t("未知平台", "Unknown platform"))")
                                     .font(.caption).foregroundStyle(.secondary)
                                 HStack {
-                                    if peer.platform == "windows" {
-                                        Button("RDP") { openRemote("rdp", peer.meshIP) }
-                                        Button("SSH") { openRemote("ssh", peer.meshIP) }
-                                    } else if peer.platform == "macos" {
-                                        Button(t("屏幕", "Screen")) { openRemote("vnc", peer.meshIP) }
-                                        Button("SSH") { openRemote("ssh", peer.meshIP) }
-                                    } else if peer.platform == "linux" {
-                                        Button("SSH") { openRemote("ssh", peer.meshIP) }
-                                        Button("VNC") { openRemote("vnc", peer.meshIP) }
+                                    ForEach(peer.remoteServices ?? []) { service in
+                                        Button(service.kind == "vnc" ? t("屏幕", "Screen") : service.kind.uppercased()) {
+                                            openRemote(service.kind, service.targetMeshIp, service.port)
+                                        }
                                     }
                                 }
                             }
@@ -173,10 +168,10 @@ struct ContentView: View {
         }
     }
 
-    private func openRemote(_ scheme: String, _ meshIP: String) {
-        guard ["ssh", "rdp", "vnc"].contains(scheme), !meshIP.isEmpty else { return }
+    private func openRemote(_ scheme: String, _ meshIP: String, _ port: UInt16) {
+        guard ["ssh", "rdp", "vnc"].contains(scheme), !meshIP.isEmpty, port > 0 else { return }
         let host = meshIP.contains(":") ? "[\(meshIP)]" : meshIP
-        if let url = URL(string: "\(scheme)://\(host)") { openURL(url) }
+        if let url = URL(string: "\(scheme)://\(host):\(port)") { openURL(url) }
     }
 
     private var statusCard: some View {

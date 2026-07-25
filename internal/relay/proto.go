@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // FrameType identifies a relay frame.

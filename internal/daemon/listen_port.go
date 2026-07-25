@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // Keep automatic WireGuard ports out of the fixed legacy port and the common

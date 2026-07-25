@@ -12,7 +12,10 @@ data class Peer(
     val pathType: String,
     val platform: String,
     val remoteAccessAllowed: Boolean,
+    val remoteServices: List<RemoteService>,
 )
+
+data class RemoteService(val kind: String, val port: Int, val targetMeshIp: String)
 
 data class ExitClient(
     val name: String,
@@ -48,6 +51,20 @@ internal fun parseStatus(json: String, current: MeshState): MeshState {
         if (peersJson != null) {
             for (index in 0 until peersJson.length()) {
                 val peer = peersJson.optJSONObject(index) ?: continue
+                val servicesJson = peer.optJSONArray("remoteServices")
+                val services = buildList {
+                    if (servicesJson != null) {
+                        for (serviceIndex in 0 until servicesJson.length()) {
+                            val service = servicesJson.optJSONObject(serviceIndex) ?: continue
+                            val kind = service.optString("kind")
+                            val port = service.optInt("port")
+                            val targetMeshIp = service.optString("targetMeshIp")
+                            if (kind in setOf("ssh", "rdp", "vnc") && port in 1..65535 && targetMeshIp.isNotBlank()) {
+                                add(RemoteService(kind = kind, port = port, targetMeshIp = targetMeshIp))
+                            }
+                        }
+                    }
+                }
                 add(
                     Peer(
                         name = peer.optString("name"),
@@ -57,6 +74,7 @@ internal fun parseStatus(json: String, current: MeshState): MeshState {
                         pathType = peer.optString("pathType", "-"),
                         platform = peer.optString("platform"),
                         remoteAccessAllowed = peer.optBoolean("remoteAccessAllowed"),
+                        remoteServices = services,
                     ),
                 )
             }

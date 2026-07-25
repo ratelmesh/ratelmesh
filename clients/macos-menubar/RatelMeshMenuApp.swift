@@ -1,5 +1,5 @@
 import AppKit
-	import CoreLocation
+import CoreLocation
 import SwiftUI
 
 private final class SystemLocationReporter: NSObject, CLLocationManagerDelegate {
@@ -85,7 +85,7 @@ private final class Store: ObservableObject {
     @Published var reachable = true
     @Published var requestedExit: String?
     private let base = URL(string: "http://127.0.0.1:8088")!
-    private var timer: Timer?
+    private var refreshTask: Task<Void, Never>?
 	private var locationReporter: SystemLocationReporter?
 
     init() {
@@ -94,8 +94,12 @@ private final class Store: ObservableObject {
 		}
 		locationReporter?.start()
         Task { await refresh() }
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                await self?.refresh()
+            }
         }
     }
 
@@ -110,7 +114,7 @@ private final class Store: ObservableObject {
 		Task { _ = try? await URLSession.shared.data(for: request) }
 	}
 
-    deinit { timer?.invalidate() }
+    deinit { refreshTask?.cancel() }
 
     func refresh() async {
         do {
@@ -276,15 +280,10 @@ private struct Panel: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if peer.platform == "windows" {
-                                Button("RDP") { openRemoteAccess("rdp", peer: peer) }
-                                Button("SSH") { openRemoteAccess("ssh", peer: peer) }
-                            } else if peer.platform == "macos" {
-                                Button(Copy.text("Screen", "屏幕")) { openRemoteAccess("vnc", peer: peer) }
-                                Button("SSH") { openRemoteAccess("ssh", peer: peer) }
-                            } else if peer.platform == "linux" {
-                                Button("SSH") { openRemoteAccess("ssh", peer: peer) }
-                                Button("VNC") { openRemoteAccess("vnc", peer: peer) }
+                            ForEach(peer.remoteServices ?? []) { service in
+                                Button(remoteServiceLabel(service.kind)) {
+                                    openRemoteAccess(service)
+                                }
                             }
                         }
                     }
@@ -378,10 +377,17 @@ private struct Panel: View {
         }
     }
 
-    private func openRemoteAccess(_ scheme: String, peer: Peer) {
-        let host = peer.meshIP.contains(":") ? "[\(peer.meshIP)]" : peer.meshIP
-        guard ["ssh", "rdp", "vnc"].contains(scheme), let url = URL(string: "\(scheme)://\(host)") else { return }
+    private func openRemoteAccess(_ service: RemoteService) {
+        let host = service.targetMeshIp.contains(":") ? "[\(service.targetMeshIp)]" : service.targetMeshIp
+        guard ["ssh", "rdp", "vnc"].contains(service.kind),
+              !service.targetMeshIp.isEmpty,
+              service.port > 0,
+              let url = URL(string: "\(service.kind)://\(host):\(service.port)") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private func remoteServiceLabel(_ kind: String) -> String {
+        kind == "vnc" ? Copy.text("Screen", "屏幕") : kind.uppercased()
     }
 
     private func routeStatus(_ status: MeshStatus, requested: String?) -> String {

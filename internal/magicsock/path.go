@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // PathType is how traffic to a peer currently flows.

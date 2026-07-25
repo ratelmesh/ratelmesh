@@ -15,10 +15,11 @@ final class MobileConfigurationTests: XCTestCase {
     }
 
     func testDecodesTenantRemoteAccessGrant() throws {
-        let json = #"{"state":"Running","peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true}],"activeExit":""}"#
+        let json = #"{"state":"Running","peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true,"remoteServices":[{"kind":"rdp","port":3389,"targetMeshIp":"100.64.0.8"}]}],"activeExit":""}"#
         let status = try JSONDecoder().decode(MobileStatus.self, from: Data(json.utf8))
         XCTAssertEqual(status.peers.first?.platform, "windows")
         XCTAssertTrue(status.peers.first?.remoteAccessAllowed == true)
+        XCTAssertEqual(status.peers.first?.remoteServices, [MobileRemoteService(kind: "rdp", port: 3389, targetMeshIp: "100.64.0.8")])
     }
 
     func testDecodesContractAndBuildsWgQuick() throws {

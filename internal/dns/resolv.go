@@ -3,6 +3,8 @@ package dns
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -10,8 +12,9 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/wgengine"
+	"github.com/shan25519/ratelmesh/internal/wgengine"
 )
 
 // SystemResolver takes over the host's DNS configuration so mesh names resolve
@@ -44,7 +47,52 @@ type noopResolver struct{}
 func (noopResolver) CurrentUpstreams() []string { return nil }
 func (noopResolver) Install(string) error       { return nil }
 func (noopResolver) Restore() error             { return nil }
-func (noopResolver) FlushCache() error          { return nil }
+func (noopResolver) FlushCache() error          { return errors.New("DNS cache flush is unsupported") }
+
+type cacheFlushCommand struct {
+	name string
+	args []string
+}
+
+type cacheFlushRunner func(name string, args ...string) error
+
+const dnsCacheFlushTimeout = 5 * time.Second
+
+func execCacheFlushCommand(name string, args ...string) error {
+	return execCacheFlushCommandWithin(dnsCacheFlushTimeout, name, args...)
+}
+
+func execCacheFlushCommandWithin(timeout time.Duration, name string, args ...string) error {
+	if timeout <= 0 {
+		return errors.New("invalid DNS cache flush timeout")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := exec.CommandContext(ctx, name, args...).Run()
+	if ctx.Err() != nil {
+		return fmt.Errorf("DNS cache flush command timed out: %w", ctx.Err())
+	}
+	return err
+}
+
+// runFirstSuccessfulFlush reports success only when a real platform cache
+// backend accepted a flush. A host without a cache daemon is not equivalent to
+// a repaired host: callers must surface an uncertain/failed repair instead of
+// claiming that a no-op worked.
+func runFirstSuccessfulFlush(runner cacheFlushRunner, commands ...cacheFlushCommand) error {
+	if runner == nil || len(commands) == 0 {
+		return errors.New("no DNS cache flush backend")
+	}
+	var failures []error
+	for _, command := range commands {
+		if err := runner(command.name, command.args...); err == nil {
+			return nil
+		} else {
+			failures = append(failures, fmt.Errorf("%s: %w", command.name, err))
+		}
+	}
+	return fmt.Errorf("no DNS cache flush backend succeeded: %w", errors.Join(failures...))
+}
 
 // --- Windows: WireGuard tunnel-service DNS + upstream discovery ---
 
@@ -54,6 +102,8 @@ func (noopResolver) FlushCache() error          { return nil }
 // lifecycle atomically with the tunnel adapter.
 type resolvWindows struct{}
 
+const windowsPowerShellPath = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+
 func (resolvWindows) CurrentUpstreams() []string {
 	// Exclude the tunnel adapter by its shared wgengine name so a stale
 	// adapter from an unclean previous run cannot feed the MagicDNS server
@@ -62,7 +112,7 @@ func (resolvWindows) CurrentUpstreams() []string {
 Get-DnsClientServerAddress -AddressFamily IPv4,IPv6 |
   Where-Object { $_.InterfaceAlias -ne '%s' } |
   ForEach-Object { $_.ServerAddresses }`, wgengine.WindowsTunnelName)
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := exec.Command(windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return nil
 	}
@@ -71,7 +121,18 @@ Get-DnsClientServerAddress -AddressFamily IPv4,IPv6 |
 
 func (resolvWindows) Install(string) error { return nil }
 func (resolvWindows) Restore() error       { return nil }
-func (resolvWindows) FlushCache() error    { return nil }
+func (resolvWindows) FlushCache() error {
+	return runFirstSuccessfulFlush(execCacheFlushCommand,
+		cacheFlushCommand{
+			name: windowsPowerShellPath,
+			args: []string{"-NoProfile", "-NonInteractive", "-Command", "Clear-DnsClientCache -ErrorAction Stop"},
+		},
+		cacheFlushCommand{
+			name: `C:\Windows\System32\ipconfig.exe`,
+			args: []string{"/flushdns"},
+		},
+	)
+}
 
 func parseWindowsDNSUpstreams(output string) []string {
 	seen := make(map[netip.Addr]bool)
@@ -174,7 +235,15 @@ func (m *resolvFile) Restore() error {
 	return nil
 }
 
-func (m *resolvFile) FlushCache() error { return nil }
+func (m *resolvFile) FlushCache() error {
+	return runFirstSuccessfulFlush(execCacheFlushCommand,
+		cacheFlushCommand{name: "/usr/bin/resolvectl", args: []string{"flush-caches"}},
+		cacheFlushCommand{name: "/bin/resolvectl", args: []string{"flush-caches"}},
+		cacheFlushCommand{name: "/usr/bin/systemd-resolve", args: []string{"--flush-caches"}},
+		cacheFlushCommand{name: "/usr/sbin/nscd", args: []string{"-i", "hosts"}},
+		cacheFlushCommand{name: "/sbin/nscd", args: []string{"-i", "hosts"}},
+	)
+}
 
 // --- macOS: networksetup on the primary service ---
 
@@ -307,10 +376,10 @@ func (m *resolvDarwin) Restore() error {
 // essential when an exit activates: macOS otherwise keeps poisoned ISP answers
 // even after MagicDNS has switched to a clean resolver inside the tunnel.
 func (m *resolvDarwin) FlushCache() error {
-	if err := exec.Command("dscacheutil", "-flushcache").Run(); err != nil {
+	if err := execCacheFlushCommand("/usr/bin/dscacheutil", "-flushcache"); err != nil {
 		return fmt.Errorf("dscacheutil flush: %w", err)
 	}
-	if err := exec.Command("killall", "-HUP", "mDNSResponder").Run(); err != nil {
+	if err := execCacheFlushCommand("/usr/bin/killall", "-HUP", "mDNSResponder"); err != nil {
 		return fmt.Errorf("mDNSResponder flush: %w", err)
 	}
 	return nil

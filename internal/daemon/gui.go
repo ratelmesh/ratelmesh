@@ -55,6 +55,18 @@ const guiHTML = `<!doctype html>
   <b id="exitclienttitle"></b>
   <div id="exitclients"></div>
  </div>
+ <div class="card">
+  <div style="display:flex;gap:.75rem;align-items:center">
+   <b id="doctortitle"></b>
+   <button id="doctorbutton" onclick="runDoctor()"></button>
+  </div>
+  <div style="margin-top:.5rem;color:#6b7280">
+   <span id="doctorprivacy"></span>
+   <a id="doctorprivacylink" href="/privacy" target="_blank" rel="noopener noreferrer"></a>
+  </div>
+  <div id="doctorresult" style="margin-top:.75rem" role="status" aria-live="polite"></div>
+  <div id="doctorrepairs" style="display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem"></div>
+ </div>
 </div>
 <script>
 var I18N={
@@ -62,11 +74,15 @@ var I18N={
   none:'none (direct)',armed:'ARMED',off:'off',peers:'peer(s)',system:'system',currentroute:'Current route',directactive:'DIRECT',exitactive:'EXIT verified · {exit}',switchdirect:'Switching to DIRECT…',switchexit:'Connecting to EXIT · {exit}…',verifyexit:'EXIT selected; verifying traffic · {exit}…',
   exitclients:'Devices using this EXIT',verified:'Verified',connecting:'Connecting',offline:'Offline',
   exitnode:'Exit node:',use:'Use',direct:'Direct',unreachable:'Cannot reach the local daemon. Retrying…',actionfail:'The change failed.',noexits:'No exits available',
+  doctor:'Network Doctor',rundoctor:'Run diagnostics',doctorworking:'Checking network paths…',doctorok:'All checks passed',doctorissues:'{n} finding(s); worst: {severity}',repair:'Repair: {title}',confirmrepair:'Apply this local repair? RatelMesh will verify the result and roll back when possible.',repairdone:'Repair finished. Running diagnostics again…',
+  doctorprivacy:'Active diagnostics contact your configured Coordinator, Relays and DNS resolver, Cloudflare reachability endpoints, and RatelMesh or tenant media canaries. Their operators may see the diagnostic time and your source or EXIT IP; shared reports redact these values.',doctorprivacylink:'Privacy details',doctorconsent:'Run active network diagnostics now? Your configured infrastructure, DNS resolver, Cloudflare reachability endpoints, and RatelMesh or tenant media canaries may receive the diagnostic time and your source or EXIT IP. Shared reports redact these values.',
   h_ip:'Mesh IP',h_name:'Name',h_role:'Role',h_path:'Path',h_online:'Online'},
  zh:{state:'状态',self:'本机',exit:'出口',ks:'断网开关',dns:'DNS',netmap:'网络图',
   none:'无(直连)',armed:'已开启',off:'关闭',peers:'个节点',system:'系统默认',currentroute:'当前线路',directactive:'DIRECT 直连',exitactive:'EXIT 已验证 · {exit}',switchdirect:'正在切换到 DIRECT…',switchexit:'正在连接 EXIT · {exit}…',verifyexit:'已选择 EXIT，正在验证流量 · {exit}…',
   exitclients:'正在使用本机出口的设备',verified:'已验证',connecting:'正在连接',offline:'离线',
   exitnode:'出口节点:',use:'使用',direct:'直连',unreachable:'暂时连不上本地服务，正在重试…',actionfail:'切换失败。',noexits:'暂无出口节点',
+  doctor:'网络医生',rundoctor:'一键诊断',doctorworking:'正在检查网络路径…',doctorok:'全部检查通过',doctorissues:'发现 {n} 项；最高级别：{severity}',repair:'修复：{title}',confirmrepair:'确定执行这项本机修复吗？RatelMesh 会验证结果，并在可行时回滚。',repairdone:'修复执行完毕，正在重新诊断…',
+  doctorprivacy:'主动诊断会连接已配置的 Coordinator、Relay 和 DNS 解析器、Cloudflare 连通性端点，以及 RatelMesh 或租户媒体探测服务。相应运营方可能看到诊断时间和你的源 IP 或 EXIT IP；分享报告会隐藏这些信息。',doctorprivacylink:'隐私说明',doctorconsent:'现在运行主动网络诊断吗？已配置的基础设施、DNS 解析器、Cloudflare 连通性端点，以及 RatelMesh 或租户媒体探测服务可能收到诊断时间和你的源 IP 或 EXIT IP。分享报告会隐藏这些信息。',
   h_ip:'Mesh IP',h_name:'名称',h_role:'角色',h_path:'路径',h_online:'在线'}
 };
 var ENUM={
@@ -74,12 +90,16 @@ var ENUM={
  path:{direct:{zh:'直连'},relay:{zh:'中转'},exit:{zh:'出口'}},
  state:{Running:{zh:'运行中'},Starting:{zh:'启动中'},Stopped:{zh:'已停止'}}
 };
-var LANG_PREF=localStorage.getItem('ratelmeshlang')||'system';
+function storageGet(key){try{return localStorage.getItem(key);}catch(e){return null;}}
+function storageSet(key,value){try{localStorage.setItem(key,value);return true;}catch(e){return false;}}
+var storedLanguage=storageGet('ratelmeshlang');
+var LANG_PREF=storedLanguage==='zh'||storedLanguage==='en'||storedLanguage==='system'?storedLanguage:'system';
 var LANG=LANG_PREF==='system'?((navigator.language||'en').toLowerCase().indexOf('zh')===0?'zh':'en'):LANG_PREF;
+var DOCTOR_DISCLOSURE_VERSION='v1';
 var lastStatus=null,pendingExit=null;
 function T(k){return I18N[LANG][k]||k;}
 function E(kind,v){var m=ENUM[kind];if(m&&m[v]&&m[v][LANG])return m[v][LANG];return v;}
-function setLanguage(value){LANG_PREF=value;localStorage.setItem('ratelmeshlang',value);LANG=value==='system'?((navigator.language||'en').toLowerCase().indexOf('zh')===0?'zh':'en'):value;renderStatic();if(lastStatus)renderRoute(lastStatus);refresh();}
+function setLanguage(value){if(value!=='system'&&value!=='zh'&&value!=='en')value='system';LANG_PREF=value;storageSet('ratelmeshlang',value);LANG=value==='system'?((navigator.language||'en').toLowerCase().indexOf('zh')===0?'zh':'en'):value;renderStatic();if(lastStatus)renderRoute(lastStatus);refresh();}
 function notice(msg){var n=document.getElementById('notice');n.textContent=msg||'';n.hidden=!msg;}
 function renderStatic(){
  document.documentElement.lang=LANG==='zh'?'zh':'en';
@@ -88,6 +108,10 @@ function renderStatic(){
  document.getElementById('btnuse').textContent=T('use');
  document.getElementById('btndirect').textContent=T('direct');
  document.getElementById('exitclienttitle').textContent=T('exitclients');
+ document.getElementById('doctortitle').textContent=T('doctor');
+ document.getElementById('doctorbutton').textContent=T('rundoctor');
+ document.getElementById('doctorprivacy').textContent=T('doctorprivacy')+' ';
+ document.getElementById('doctorprivacylink').textContent=T('doctorprivacylink');
  ['h_ip','h_name','h_role','h_path','h_online'].forEach(function(id){document.getElementById(id).textContent=T(id);});
 }
 function renderRoute(s){
@@ -140,6 +164,28 @@ async function refresh(){
 async function mutate(url,target){pendingExit=target;if(lastStatus)renderRoute(lastStatus);try{var r=await fetch(url,{method:'POST'});if(!r.ok)throw new Error(await r.text());pendingExit=null;await refresh();}catch(e){pendingExit=null;if(lastStatus)renderRoute(lastStatus);notice(T('actionfail')+' '+e.message);}}
 async function useExit(){var n=document.getElementById('exitsel').value;if(n)await mutate('/localapi/exit/use?name='+encodeURIComponent(n),n);}
 async function clearExit(){await mutate('/localapi/exit/clear','');}
+async function runDoctor(){
+ var result=document.getElementById('doctorresult'),repairs=document.getElementById('doctorrepairs'),button=document.getElementById('doctorbutton');
+ var consented=storageGet('ratelmeshdoctorconsent')===DOCTOR_DISCLOSURE_VERSION;
+ if(!consented){
+  if(!window.confirm(T('doctorconsent')))return;
+  storageSet('ratelmeshdoctorconsent',DOCTOR_DISCLOSURE_VERSION);
+ }
+ button.disabled=true;result.textContent=T('doctorworking');repairs.textContent='';
+ try{
+  var response=await fetch('/localapi/doctor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION}),cache:'no-store'});if(!response.ok)throw new Error('status '+response.status);
+  var data=await response.json(),summary=data.report&&data.report.summary?data.report.summary:{};
+  result.textContent=summary.ok?T('doctorok'):T('doctorissues').replace('{n}',summary.total_findings||0).replace('{severity}',summary.worst_severity||'-');
+  (data.report&&data.report.findings||[]).forEach(function(f){var line=document.createElement('div');line.textContent=(f.code||'')+': '+(f.summary||'');result.appendChild(line);});
+  var available={};(data.availableRepairs||[]).forEach(function(action){available[action]=true;});
+  (data.plan&&data.plan.repairs||[]).forEach(function(repair){if(!repair.applicable||!available[repair.action])return;var b=document.createElement('button');b.textContent=T('repair').replace('{title}',repair.title||repair.action);b.onclick=function(){repairDoctor(repair.action);};repairs.appendChild(b);});
+ }catch(e){result.textContent=T('actionfail')+' '+e.message;}finally{button.disabled=false;}
+}
+async function repairDoctor(action){
+ if(!window.confirm(T('confirmrepair')))return;
+ var result=document.getElementById('doctorresult');
+ try{var response=await fetch('/localapi/doctor/repair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})});if(!response.ok)throw new Error(await response.text());result.textContent=T('repairdone');await runDoctor();}catch(e){result.textContent=T('actionfail')+' '+e.message;}
+}
 renderStatic(); refresh(); setInterval(refresh,2000);
 </script>
 </body></html>`

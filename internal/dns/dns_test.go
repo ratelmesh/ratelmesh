@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 	"golang.org/x/net/dns/dnsmessage"
 )
 

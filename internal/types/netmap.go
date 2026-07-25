@@ -3,6 +3,8 @@ package types
 import (
 	"net/netip"
 	"time"
+
+	"github.com/shan25519/ratelmesh/internal/remoteaccess"
 )
 
 // NodeRole distinguishes the kinds of node in a mesh. A plain node only routes
@@ -43,7 +45,11 @@ type Node struct {
 	// official clients expose safe protocol launchers for this target; clients
 	// never submit or persist this value and it grants no routing capability.
 	RemoteAccessAllowed bool `json:"remoteAccessAllowed,omitempty"`
-	Key                 Key  `json:"key"` // public key
+	// RemoteServices are target-reported, coordinator-validated TCP listeners
+	// available to the official remote-access launcher. They are volatile and
+	// never persisted as authoritative device state.
+	RemoteServices []remoteaccess.ServiceAdvertisement `json:"remoteServices,omitempty"`
+	Key            Key                                 `json:"key"` // public key
 	// PQKEMPublicKey is this node's ML-KEM-768 encapsulation key. PQSigningPublicKey
 	// authenticates pairwise encapsulations so the coordinator cannot substitute
 	// a ciphertext whose shared secret it knows.
@@ -98,6 +104,16 @@ type Netmap struct {
 	// fallback WireGuard transport, so clients don't need a manual -relay flag
 	// (DESIGN.md §3.2, DERP-style relay map).
 	Relays []string `json:"relays,omitempty"`
+	// RemoteAccessPolicyVersion is the tenant-wide revocation floor. Clients
+	// reject signed grants below it. RemoteAccessGrants contains only grants
+	// relevant to Self as grantee or target.
+	RemoteAccessPolicyVersion uint64                         `json:"remoteAccessPolicyVersion,omitempty"`
+	RemoteAccessPolicyState   remoteaccess.SignedPolicyState `json:"remoteAccessPolicyState,omitempty"`
+	// RemoteAccessTargetState is an authority-signed, per-Self activation
+	// decision bound to the exact signed policy digest. Self.RemoteAccessAllowed
+	// remains presentation data and must never control a target firewall.
+	RemoteAccessTargetState remoteaccess.SignedTargetState `json:"remoteAccessTargetState,omitempty"`
+	RemoteAccessGrants      []remoteaccess.SignedGrant     `json:"remoteAccessGrants,omitempty"`
 }
 
 // PQSession is an ML-KEM-768 encapsulation from the lexicographically smaller

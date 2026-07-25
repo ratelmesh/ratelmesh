@@ -15,9 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/pop"
-	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/pop"
+	"github.com/shan25519/ratelmesh/internal/pqcrypto"
+	"github.com/shan25519/ratelmesh/internal/remoteaccess"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // Client talks to a single coord server.
@@ -197,6 +198,13 @@ func (c *Client) PollWithMetadata(ctx context.Context, nodeID string, knownVersi
 // EXIT state. Exit IDs are validated by the coordinator and remain telemetry;
 // they cannot change server-authoritative capabilities or routes.
 func (c *Client) PollWithRuntime(ctx context.Context, nodeID string, knownVersion uint64, endpoints, discoEndpoints []string, platform, locationRegion, selectedExitID, activeExitID string) (*types.PollResponse, error) {
+	return c.PollWithRuntimeAndServices(ctx, nodeID, knownVersion, endpoints, discoEndpoints, platform, locationRegion, selectedExitID, activeExitID, nil)
+}
+
+// PollWithRuntimeAndServices additionally refreshes target-side remote-service
+// observations. A nil service slice preserves the previous observation after a
+// transient detector failure; a non-nil empty slice explicitly clears it.
+func (c *Client) PollWithRuntimeAndServices(ctx context.Context, nodeID string, knownVersion uint64, endpoints, discoEndpoints []string, platform, locationRegion, selectedExitID, activeExitID string, remoteServices []remoteaccess.ServiceAdvertisement) (*types.PollResponse, error) {
 	c.mu.Lock()
 	machineIdentity := c.machineIdentity
 	c.mu.Unlock()
@@ -210,6 +218,7 @@ func (c *Client) PollWithRuntime(ctx context.Context, nodeID string, knownVersio
 		LocationRegion:  locationRegion,
 		SelectedExitID:  selectedExitID,
 		ActiveExitID:    activeExitID,
+		RemoteServices:  remoteServices,
 		SessionToken:    c.Token(),
 		MachineIdentity: machineIdentity,
 	}

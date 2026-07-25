@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" color="#000000" role="img" aria-labelledby="title desc">
+  <title id="title">RatelMesh monochrome icon</title>
+  <desc id="desc">A one-ink honey badger and connected mesh mark using transparent negative space.</desc>
+  <defs>
+    <mask id="cutouts">
+      <rect width="512" height="512" fill="#fff"/>
+      <path fill="#000" d="M73 145c-12-11-21-13-27-7-8 8-2 24 14 34l17 10 20-29zm366 0c12-11 21-13 27-7 8 8 2 24-14 34l-17 10-20-29zM91 142c45-47 99-70 165-70s120 23 165 70l-37 65c-42-22-85-33-128-33s-86 11-128 33zM128 207l34 30 25 156-58-43-22-92zm256 0-34 30-25 156 58-43 22-92zM146 276l66 15-32 23-38-12zm220 0-66 15 32 23 38-12zM231 333l25-20 25 20-9 41 18 25-34 20-34-20 18-25z"/>
+    </mask>
+  </defs>
+  <path fill="currentColor" mask="url(#cutouts)" d="M81 131C61 113 46 112 34 124 18 140 25 171 54 189l19 167c5 48 32 78 74 101l89 39q20 9 40 0l89-39c42-23 69-53 74-101l19-167c29-18 36-49 20-65-12-12-27-11-47 7l-70-45c-32-21-67-32-105-32s-73 11-105 32z"/>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"><path d="m180 120h152m-172 40h192"/><path d="m180 120-20 40m20-40 76 40m0-40-96 40m96-40 96 40m-20-40-76 40m76-40 20 40"/></g>
+  <g fill="currentColor"><circle cx="180" cy="120" r="7"/><circle cx="256" cy="120" r="7"/><circle cx="332" cy="120" r="7"/><circle cx="160" cy="160" r="7"/><circle cx="256" cy="160" r="7"/><circle cx="352" cy="160" r="7"/></g>
+</svg>

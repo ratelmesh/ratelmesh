@@ -110,6 +110,13 @@ struct ExitClientStatus: Codable, Equatable, Identifiable, Sendable {
     var id: String { meshIP.isEmpty ? name : meshIP }
 }
 
+struct MobileRemoteService: Codable, Equatable, Identifiable, Sendable {
+    let kind: String
+    let port: UInt16
+    let targetMeshIp: String
+    var id: String { "\(kind)|\(port)|\(targetMeshIp)" }
+}
+
 struct MobilePeerStatus: Codable, Equatable, Identifiable, Sendable {
     let name: String
     let meshIP: String
@@ -118,6 +125,7 @@ struct MobilePeerStatus: Codable, Equatable, Identifiable, Sendable {
     let pathType: String?
     let platform: String?
     let remoteAccessAllowed: Bool?
+    let remoteServices: [MobileRemoteService]?
     var id: String { meshIP.isEmpty ? name : meshIP }
 }
 

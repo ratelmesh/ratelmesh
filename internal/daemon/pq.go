@@ -6,8 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/pqcrypto"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 func pqCiphertextHash(ciphertext []byte) string {

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/ratelmesh/ratelmesh/internal/daemon"
-	"github.com/ratelmesh/ratelmesh/internal/i18n"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/daemon"
+	"github.com/shan25519/ratelmesh/internal/i18n"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // tr is the process printer, localized from the environment (DESIGN.md §9.3:

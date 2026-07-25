@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/transport"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/transport"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // Client is a peer's connection to a relay. It binds under the peer's public

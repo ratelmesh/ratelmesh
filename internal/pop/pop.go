@@ -23,7 +23,7 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // GenerateCoordKey returns a new X25519 keypair for the coord.

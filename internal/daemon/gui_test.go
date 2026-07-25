@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/daemon"
-	"github.com/ratelmesh/ratelmesh/internal/wgengine"
+	"github.com/shan25519/ratelmesh/internal/daemon"
+	"github.com/shan25519/ratelmesh/internal/wgengine"
 )
 
 // TestGUIServesControlPanel verifies ratelmeshd serves the self-contained web GUI and
@@ -48,6 +48,29 @@ func TestGUIServesControlPanel(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("GUI page missing route/language affordance %q", want)
 		}
+	}
+	for _, want := range []string{
+		"id=\"doctorprivacy\"",
+		"source or EXIT IP",
+		"源 IP 或 EXIT IP",
+		"Cloudflare reachability endpoints",
+		"Cloudflare 连通性端点",
+		"configured Coordinator, Relays and DNS resolver",
+		"href=\"/privacy\"",
+		"if(!window.confirm(T('doctorconsent')))return",
+		"DOCTOR_DISCLOSURE_VERSION='v1'",
+		"storageSet('ratelmeshdoctorconsent',DOCTOR_DISCLOSURE_VERSION)",
+		"body:JSON.stringify({confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})",
+		"body:JSON.stringify({action:action,confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})",
+		"function storageGet(key){try{return localStorage.getItem(key);}catch(e){return null;}}",
+		"function storageSet(key,value){try{localStorage.setItem(key,value);return true;}catch(e){return false;}}",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GUI page missing first-run Network Doctor disclosure %q", want)
+		}
+	}
+	if confirmAt, requestAt := strings.Index(body, "window.confirm(T('doctorconsent'))"), strings.Index(body, "fetch('/localapi/doctor'"); confirmAt < 0 || requestAt < 0 || confirmAt > requestAt {
+		t.Errorf("Network Doctor disclosure must run before its active request: confirm=%d request=%d", confirmAt, requestAt)
 	}
 
 	privacy, err := http.Get("http://" + addr + "/privacy")

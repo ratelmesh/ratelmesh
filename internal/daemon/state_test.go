@@ -10,9 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ratelmesh/ratelmesh/internal/control"
-	"github.com/ratelmesh/ratelmesh/internal/routing"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/control"
+	"github.com/shan25519/ratelmesh/internal/remoteaccess"
+	"github.com/shan25519/ratelmesh/internal/routing"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 func TestMachineIdentityIsBoundToHardwareAndNodeKey(t *testing.T) {
@@ -153,6 +154,10 @@ func TestValidateRoleConfig(t *testing.T) {
 		{name: "windows kill-switch with direct rules", cfg: Config{Role: types.RolePlain, KillSwitch: true, SplitTunnel: split}, goos: "windows", wantErr: true},
 		{name: "linux kill-switch with direct rules", cfg: Config{Role: types.RolePlain, KillSwitch: true, SplitTunnel: split}, goos: "linux"},
 		{name: "windows kill-switch without split tunnel", cfg: Config{Role: types.RolePlain, KillSwitch: true}, goos: "windows"},
+		{name: "valid Linux remote candidate", cfg: Config{RemoteAccessCandidates: []remoteaccess.Candidate{{Kind: remoteaccess.KindSSH, Port: 2222}}}, goos: "linux"},
+		{name: "invalid Linux remote candidate", cfg: Config{RemoteAccessCandidates: []remoteaccess.Candidate{{Kind: remoteaccess.KindRDP, Port: 3389}}}, goos: "linux", wantErr: true},
+		{name: "unsupported platform remote candidate", cfg: Config{RemoteAccessCandidates: []remoteaccess.Candidate{{Kind: remoteaccess.KindSSH, Port: 22}}}, goos: "android", wantErr: true},
+		{name: "unsupported platform explicit none", cfg: Config{RemoteAccessCandidates: []remoteaccess.Candidate{}}, goos: "android"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

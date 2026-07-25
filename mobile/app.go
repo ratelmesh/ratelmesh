@@ -16,8 +16,8 @@ import (
 	"sync"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/ratelmesh/ratelmesh/internal/daemon"
-	"github.com/ratelmesh/ratelmesh/internal/sign"
+	"github.com/shan25519/ratelmesh/internal/daemon"
+	"github.com/shan25519/ratelmesh/internal/sign"
 )
 
 // App is the handle the mobile app holds for the lifetime of the VPN session.

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">RatelMesh horizontal logo v2 for dark backgrounds</title>
+  <desc id="desc">Transparent horizontal logo with a honey badger mesh icon and outlined wordmark.</desc>
+  <g transform="translate(45 35) scale(.45)">
+    <path fill="#0B0F14" stroke="#42515C" stroke-width="8" d="M81 131C61 113 46 112 34 124 18 140 25 171 54 189l19 167c5 48 32 78 74 101l89 39q20 9 40 0l89-39c42-23 69-53 74-101l19-167c29-18 36-49 20-65-12-12-27-11-47 7l-70-45c-32-21-67-32-105-32s-73 11-105 32z"/>
+    <path fill="#F4F7F9" d="M73 145c-12-11-21-13-27-7-8 8-2 24 14 34l17 10 20-29zm366 0c12-11 21-13 27-7 8 8 2 24-14 34l-17 10-20-29zM91 142c45-47 99-70 165-70s120 23 165 70l-37 65c-42-22-85-33-128-33s-86 11-128 33z"/>
+    <g fill="none" stroke="#20B9E8" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"><path d="m180 120h152m-172 40h192"/><path d="m180 120-20 40m20-40 76 40m0-40-96 40m96-40 96 40m-20-40-76 40m76-40 20 40"/></g>
+    <path fill="#F4F7F9" d="m128 207 34 30 25 156-58-43-22-92zm256 0-34 30-25 156 58-43 22-92z"/>
+    <path fill="#20B9E8" d="m146 276 66 15-32 23-38-12zm220 0-66 15 32 23 38-12z"/>
+    <path fill="#F4F7F9" d="m231 333 25-20 25 20-9 41 18 25-34 20-34-20 18-25z"/>
+    <path fill="#0B0F14" d="m232 395 24-9 24 9-10 16-14 6-14-6z"/>
+    <g fill="#20B9E8"><circle cx="180" cy="120" r="7"/><circle cx="256" cy="120" r="7"/><circle cx="332" cy="120" r="7"/><circle cx="160" cy="160" r="7"/><circle cx="256" cy="160" r="7"/><circle cx="352" cy="160" r="7"/></g>
+  </g>
+  <!-- Custom path wordmark: no font dependency. -->
+  <g transform="translate(315 100) scale(1.18)" fill="none" stroke-linecap="square" stroke-linejoin="miter" stroke-width="13">
+    <g stroke="#F4F7F9">
+      <path d="M0 80V0h25c16 0 25 8 25 22s-9 22-25 22H0m25 0 28 36"/>
+      <path d="m70 80 24-80 24 80M80 48h28"/>
+      <path d="M140 0h52m-26 0v80"/>
+      <path d="M260 0h-48v80h48m-48-41h38"/>
+      <path d="M280 0v80h48"/>
+    </g>
+    <g stroke="#20B9E8">
+      <path d="M350 80V0l27 42 27-42v80"/>
+      <path d="M472 0h-48v80h48m-48-41h38"/>
+      <path d="M539 5c-8-4-16-5-25-5-15 0-24 8-24 20 0 13 10 18 25 20 16 2 25 8 25 20 0 14-10 21-27 21-9 0-18-2-26-7"/>
+      <path d="M562 0v80m50-80v80m-50-40h50"/>
+    </g>
+  </g>
+</svg>

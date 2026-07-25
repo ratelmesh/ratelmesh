@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 func TestSTUNRoundTrip(t *testing.T) {

@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/atomicfile"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/atomicfile"
+	"github.com/shan25519/ratelmesh/internal/types"
 	"golang.zx2c4.com/wireguard/conn"
 	wgdevice "golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"

@@ -45,10 +45,11 @@ class MeshStateTest {
     @Test
     fun parsesTenantRemoteAccessGrant() {
         val state = parseStatus(
-            """{"state":"Running","self":{"meshIP":"100.64.0.2"},"peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true}]}""",
+            """{"state":"Running","self":{"meshIP":"100.64.0.2"},"peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true,"remoteServices":[{"kind":"rdp","port":3389,"targetMeshIp":"100.64.0.8"},{"kind":"invalid","port":1,"targetMeshIp":"192.168.1.1"}]}]}""",
             MeshState(),
         )
         assertEquals("windows", state.peers.single().platform)
         assertTrue(state.peers.single().remoteAccessAllowed)
+        assertEquals(listOf(RemoteService("rdp", 3389, "100.64.0.8")), state.peers.single().remoteServices)
     }
 }

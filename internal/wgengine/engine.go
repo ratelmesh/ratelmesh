@@ -10,7 +10,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // PublicEndpointDiscoverer discovers the NAT mapping of the exact UDP socket

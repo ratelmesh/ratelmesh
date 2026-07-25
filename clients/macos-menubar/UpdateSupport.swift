@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 
 enum ProductInfo {
@@ -113,7 +114,7 @@ enum UpdateSecurity {
         pqPublicKeyBase64: String = "",
         pqVerifierURL: URL? = nil
     ) throws {
-        guard (manifest.schema == 1 || manifest.schema == 2),
+        guard manifest.schema == 2,
               manifest.platform == "macos",
               parseVersion(manifest.version, exactSemver: true) != nil,
               parseVersion(manifest.minimumSystemVersion, exactSemver: false) != nil,
@@ -147,30 +148,28 @@ enum UpdateSecurity {
         guard publicKey.isValidSignature(signatureData, for: manifest.canonicalData) else {
             throw UpdateSecurityError.invalidSignature
         }
-        if manifest.schema >= 2 {
-            guard let publicKeyData = Data(base64Encoded: pqPublicKeyBase64), publicKeyData.count == 1952,
-                  let pqSignature = manifest.pqSignature,
-                  let signatureData = Data(base64Encoded: pqSignature), signatureData.count == 3309,
-                  let helper = pqVerifierURL ?? bundledPQVerifierURL()
-            else { throw UpdateSecurityError.invalidPQSignature }
-            let process = Process()
-            process.executableURL = helper
-            process.arguments = ["-public", pqPublicKeyBase64, "-signature", pqSignature]
-            let input = Pipe()
-            process.standardInput = input
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                input.fileHandleForWriting.write(manifest.canonicalData)
-                try input.fileHandleForWriting.close()
-                process.waitUntilExit()
-            } catch {
-                throw UpdateSecurityError.invalidPQSignature
-            }
-            guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-                throw UpdateSecurityError.invalidPQSignature
-            }
+        guard let publicKeyData = Data(base64Encoded: pqPublicKeyBase64), publicKeyData.count == 1952,
+              let pqSignature = manifest.pqSignature, !pqSignature.isEmpty,
+              let signatureData = Data(base64Encoded: pqSignature), signatureData.count == 3309,
+              let helper = pqVerifierURL ?? bundledPQVerifierURL()
+        else { throw UpdateSecurityError.invalidPQSignature }
+        let process = Process()
+        process.executableURL = helper
+        process.arguments = ["-public", pqPublicKeyBase64, "-signature", pqSignature]
+        let input = Pipe()
+        process.standardInput = input
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            input.fileHandleForWriting.write(manifest.canonicalData)
+            try input.fileHandleForWriting.close()
+            process.waitUntilExit()
+        } catch {
+            throw UpdateSecurityError.invalidPQSignature
+        }
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+            throw UpdateSecurityError.invalidPQSignature
         }
     }
 
@@ -211,8 +210,12 @@ enum UpdateSecurity {
     }
 
     static func responseIsAllowed(_ response: URLResponse) -> Bool {
-        guard let responseURL = response.url else { return false }
-        return responseURL.scheme == "https" && responseURL.host?.lowercased() == allowedHost
+        urlIsAllowed(response.url)
+    }
+
+    static func urlIsAllowed(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return url.scheme == "https" && url.host?.lowercased() == allowedHost
     }
 
     static func systemSupports(_ minimumVersion: String) -> Bool {
@@ -234,6 +237,298 @@ enum UpdateSecurity {
             result.append(number)
         }
         return result
+    }
+}
+
+private enum BoundedTransferError: Error {
+    case responseTooLarge
+    case incompleteResponse
+}
+
+private struct BoundedTransferResult {
+    let data: Data?
+    let fileURL: URL?
+    let response: URLResponse
+}
+
+final class BoundedHTTPTransfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private enum Sink {
+        case memory
+        case file(URL, FileHandle)
+    }
+
+    private let limit: Int64
+    private let expectedLength: Int64?
+    private let sink: Sink
+    private let queue: OperationQueue
+    private var received: Int64 = 0
+    private var response: URLResponse?
+    private var data = Data()
+    private var continuation: CheckedContinuation<BoundedTransferResult, Error>?
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var finished = false
+
+    private init(limit: Int64, expectedLength: Int64?, sink: Sink) {
+        self.limit = limit
+        self.expectedLength = expectedLength
+        self.sink = sink
+        queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        super.init()
+    }
+
+    static func data(
+        for request: URLRequest,
+        using baseSession: URLSession,
+        limit: Int64
+    ) async throws -> (Data, URLResponse) {
+        guard limit > 0 else { throw BoundedTransferError.responseTooLarge }
+        let result = try await perform(
+            request: request,
+            using: baseSession,
+            transfer: BoundedHTTPTransfer(limit: limit, expectedLength: nil, sink: .memory)
+        )
+        guard let data = result.data else { throw BoundedTransferError.incompleteResponse }
+        return (data, result.response)
+    }
+
+    static func download(
+        for request: URLRequest,
+        using baseSession: URLSession,
+        limit: Int64
+    ) async throws -> (URL, URLResponse) {
+        guard limit > 0 else { throw BoundedTransferError.responseTooLarge }
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ratelmesh-update-\(UUID().uuidString).download")
+        guard FileManager.default.createFile(atPath: temporaryURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: temporaryURL)
+            let transfer = BoundedHTTPTransfer(
+                limit: limit,
+                expectedLength: limit,
+                sink: .file(temporaryURL, handle)
+            )
+            let result = try await perform(request: request, using: baseSession, transfer: transfer)
+            guard let fileURL = result.fileURL else {
+                throw BoundedTransferError.incompleteResponse
+            }
+            return (fileURL, result.response)
+        } catch {
+            try? FileManager.default.removeItem(at: temporaryURL)
+            throw error
+        }
+    }
+
+    private static func perform(
+        request: URLRequest,
+        using baseSession: URLSession,
+        transfer: BoundedHTTPTransfer
+    ) async throws -> BoundedTransferResult {
+        try await withCheckedThrowingContinuation { continuation in
+            transfer.continuation = continuation
+            let session = URLSession(
+                configuration: baseSession.configuration,
+                delegate: transfer,
+                delegateQueue: transfer.queue
+            )
+            transfer.session = session
+            let task = session.dataTask(with: request)
+            transfer.task = task
+            task.resume()
+        }
+    }
+
+    func urlSession(
+        _: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard !finished else {
+            completionHandler(.cancel)
+            return
+        }
+        guard let http = response as? HTTPURLResponse,
+              http.statusCode == 200,
+              UpdateSecurity.responseIsAllowed(response)
+        else {
+            completionHandler(.cancel)
+            finish(throwing: URLError(.badServerResponse))
+            return
+        }
+        let declared = response.expectedContentLength
+        guard declared < 0 || declared <= limit,
+              declared < 0 || expectedLength == nil || declared == expectedLength
+        else {
+            completionHandler(.cancel)
+            finish(throwing: BoundedTransferError.responseTooLarge)
+            return
+        }
+        self.response = response
+        completionHandler(.allow)
+    }
+
+    func urlSession(
+        _: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection _: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard !finished, UpdateSecurity.urlIsAllowed(request.url) else {
+            completionHandler(nil)
+            finish(throwing: UpdateSecurityError.unsafeURL)
+            return
+        }
+        completionHandler(request)
+    }
+
+    func urlSession(_: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        guard !finished else { return }
+        let (next, overflow) = received.addingReportingOverflow(Int64(chunk.count))
+        guard !overflow, next <= limit else {
+            task?.cancel()
+            finish(throwing: BoundedTransferError.responseTooLarge)
+            return
+        }
+        do {
+            switch sink {
+            case .memory:
+                data.append(chunk)
+            case let .file(_, handle):
+                try handle.write(contentsOf: chunk)
+            }
+            received = next
+        } catch {
+            task?.cancel()
+            finish(throwing: error)
+        }
+    }
+
+    func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !finished else { return }
+        if let error {
+            finish(throwing: error)
+            return
+        }
+        guard let response else {
+            finish(throwing: BoundedTransferError.incompleteResponse)
+            return
+        }
+        let declared = response.expectedContentLength
+        guard (declared < 0 || declared == received),
+              expectedLength == nil || received == expectedLength
+        else {
+            finish(throwing: BoundedTransferError.incompleteResponse)
+            return
+        }
+        do {
+            let result: BoundedTransferResult
+            switch sink {
+            case .memory:
+                result = BoundedTransferResult(data: data, fileURL: nil, response: response)
+            case let .file(url, handle):
+                try handle.close()
+                result = BoundedTransferResult(data: nil, fileURL: url, response: response)
+            }
+            finish(returning: result)
+        } catch {
+            finish(throwing: error)
+        }
+    }
+
+    private func finish(returning result: BoundedTransferResult) {
+        guard !finished else { return }
+        finished = true
+        let continuation = continuation
+        self.continuation = nil
+        session?.finishTasksAndInvalidate()
+        continuation?.resume(returning: result)
+    }
+
+    private func finish(throwing error: Error) {
+        guard !finished else { return }
+        finished = true
+        if case let .file(url, handle) = sink {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: url)
+        }
+        let continuation = continuation
+        self.continuation = nil
+        session?.invalidateAndCancel()
+        continuation?.resume(throwing: error)
+    }
+}
+
+enum AtomicPackageCache {
+    typealias Replace = (_ candidate: URL, _ destination: URL) throws -> Void
+
+    static func install(
+        verifiedPackage source: URL,
+        in cacheRoot: URL,
+        fileName: String,
+        expectedSize: Int64,
+        expectedSHA256: String,
+        replace: Replace = atomicRename
+    ) throws -> URL {
+        guard expectedSize > 0,
+              !fileName.isEmpty,
+              fileName == URL(fileURLWithPath: fileName).lastPathComponent
+        else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        let destination = cacheRoot.appendingPathComponent(fileName, isDirectory: false)
+        let candidate = cacheRoot.appendingPathComponent(
+            ".\(fileName).\(UUID().uuidString).candidate",
+            isDirectory: false
+        )
+        var committed = false
+        defer {
+            if !committed {
+                try? FileManager.default.removeItem(at: candidate)
+            }
+        }
+
+        try FileManager.default.copyItem(at: source, to: candidate)
+        let handle = try FileHandle(forWritingTo: candidate)
+        do {
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: candidate.path)
+        guard (attributes[.size] as? NSNumber)?.int64Value == expectedSize,
+              try UpdateSecurity.sha256(of: candidate) == expectedSHA256
+        else {
+            throw UpdateSecurityError.checksumMismatch
+        }
+
+        try replace(candidate, destination)
+        committed = true
+        return destination
+    }
+
+    private static func atomicRename(_ candidate: URL, _ destination: URL) throws {
+        guard candidate.deletingLastPathComponent().standardizedFileURL ==
+                destination.deletingLastPathComponent().standardizedFileURL
+        else {
+            throw CocoaError(.fileWriteVolumeReadOnly)
+        }
+        let result = candidate.withUnsafeFileSystemRepresentation { candidatePath in
+            destination.withUnsafeFileSystemRepresentation { destinationPath in
+                guard let candidatePath, let destinationPath else { return Int32(-1) }
+                return Darwin.rename(candidatePath, destinationPath)
+            }
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 }
 
@@ -356,11 +651,15 @@ final class UpdateStore: ObservableObject {
             var request = URLRequest(url: feedURL)
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             request.setValue("application/json", forHTTPHeaderField: "Accept")
-            let (data, response) = try await session.data(for: request)
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            let (data, response) = try await BoundedHTTPTransfer.data(
+                for: request,
+                using: session,
+                limit: 65_536
+            )
             guard let http = response as? HTTPURLResponse,
                   http.statusCode == 200,
-                  UpdateSecurity.responseIsAllowed(response),
-                  data.count <= 65_536
+                  UpdateSecurity.responseIsAllowed(response)
             else {
                 throw URLError(.badServerResponse)
             }
@@ -445,7 +744,13 @@ final class UpdateStore: ObservableObject {
         do {
             var request = URLRequest(url: packageURL)
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            let (temporaryURL, response) = try await session.download(for: request)
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            let (temporaryURL, response) = try await BoundedHTTPTransfer.download(
+                for: request,
+                using: session,
+                limit: candidate.size
+            )
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
             guard let http = response as? HTTPURLResponse,
                   http.statusCode == 200,
                   UpdateSecurity.responseIsAllowed(response)
@@ -470,12 +775,13 @@ final class UpdateStore: ObservableObject {
                     create: true
                 ).appendingPathComponent("com.ratelmesh.menubar/updates", isDirectory: true)
             }
-            try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
-            let destination = cacheRoot.appendingPathComponent("RatelMesh-macOS-\(candidate.version)-universal.pkg")
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.moveItem(at: temporaryURL, to: destination)
+            let destination = try AtomicPackageCache.install(
+                verifiedPackage: temporaryURL,
+                in: cacheRoot,
+                fileName: "RatelMesh-macOS-\(candidate.version)-universal.pkg",
+                expectedSize: candidate.size,
+                expectedSHA256: candidate.sha256
+            )
             downloadedPackage = destination
             phase = .ready
             if promptWhenReady { presentInstallPrompt(version: candidate.version) }

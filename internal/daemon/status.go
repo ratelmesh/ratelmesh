@@ -4,7 +4,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/remoteaccess"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // BackendState mirrors the daemon's lifecycle for the CLI/GUI.
@@ -59,13 +60,14 @@ type ExitClientStatus struct {
 
 // PeerStatus is one device as shown to the user.
 type PeerStatus struct {
-	Name                string         `json:"name"`
-	MeshIP              string         `json:"meshIP"`
-	KeyShort            string         `json:"keyShort"`
-	Role                types.NodeRole `json:"role"`
-	Platform            string         `json:"platform,omitempty"`
-	RemoteAccessAllowed bool           `json:"remoteAccessAllowed,omitempty"`
-	Online              bool           `json:"online"`
+	Name                string                              `json:"name"`
+	MeshIP              string                              `json:"meshIP"`
+	KeyShort            string                              `json:"keyShort"`
+	Role                types.NodeRole                      `json:"role"`
+	Platform            string                              `json:"platform,omitempty"`
+	RemoteAccessAllowed bool                                `json:"remoteAccessAllowed,omitempty"`
+	RemoteServices      []remoteaccess.ServiceAdvertisement `json:"remoteServices,omitempty"`
+	Online              bool                                `json:"online"`
 	// PathType is "direct", "relay" or "-" (unknown/M1). Populated by magicsock
 	// in M2 (DESIGN.md §3.2).
 	PathType string `json:"pathType"`
@@ -79,6 +81,7 @@ func peerStatusFromNode(n types.Node) PeerStatus {
 		Role:                n.Role,
 		Platform:            n.Platform,
 		RemoteAccessAllowed: n.RemoteAccessAllowed,
+		RemoteServices:      append([]remoteaccess.ServiceAdvertisement(nil), n.RemoteServices...),
 		Online:              n.Online,
 		PathType:            "-",
 	}

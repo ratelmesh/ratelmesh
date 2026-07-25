@@ -390,18 +390,11 @@ private fun MeshScreen(
                     Text(peer.name.ifBlank { peer.meshIp }, fontWeight = FontWeight.SemiBold)
                     Text("${peer.meshIp} · ${peer.platform}", style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        when (peer.platform) {
-                            "windows" -> {
-                                OutlinedButton(onClick = { openRemoteAccess(context, "rdp", peer.meshIp) }) { Text("RDP") }
-                                OutlinedButton(onClick = { openRemoteAccess(context, "ssh", peer.meshIp) }) { Text("SSH") }
-                            }
-                            "macos" -> {
-                                OutlinedButton(onClick = { openRemoteAccess(context, "vnc", peer.meshIp) }) { Text(stringResource(R.string.remote_screen)) }
-                                OutlinedButton(onClick = { openRemoteAccess(context, "ssh", peer.meshIp) }) { Text("SSH") }
-                            }
-                            "linux" -> {
-                                OutlinedButton(onClick = { openRemoteAccess(context, "ssh", peer.meshIp) }) { Text("SSH") }
-                                OutlinedButton(onClick = { openRemoteAccess(context, "vnc", peer.meshIp) }) { Text("VNC") }
+                        peer.remoteServices.forEach { service ->
+                            OutlinedButton(onClick = {
+                                openRemoteAccess(context, service.kind, service.targetMeshIp, service.port)
+                            }) {
+                                Text(if (service.kind == "vnc") stringResource(R.string.remote_screen) else service.kind.uppercase())
                             }
                         }
                     }
@@ -416,10 +409,10 @@ private fun MeshScreen(
     }
 }
 
-private fun openRemoteAccess(context: Context, scheme: String, meshIp: String) {
-    if (scheme !in setOf("ssh", "rdp", "vnc") || meshIp.isBlank()) return
+private fun openRemoteAccess(context: Context, scheme: String, meshIp: String, port: Int) {
+    if (scheme !in setOf("ssh", "rdp", "vnc") || meshIp.isBlank() || port !in 1..65535) return
     val host = if (':' in meshIp) "[$meshIp]" else meshIp
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://$host"))
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://$host:$port"))
     try {
         context.startActivity(intent)
     } catch (_: Exception) {

@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // Relay bind is protected by an X25519 proof-of-possession, so a client can only

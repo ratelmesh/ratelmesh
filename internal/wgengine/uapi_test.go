@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 func TestWgQuickConfigRendersInterfaceAndPeers(t *testing.T) {

@@ -1,5 +1,7 @@
 package types
 
+import "github.com/shan25519/ratelmesh/internal/remoteaccess"
+
 // Control-plane API contract (M1: HTTP+JSON long-poll; migrates to gRPC
 // streaming in M2, DESIGN.md §3.1). Kept in the shared types package so coord,
 // ratelmeshd and tests all agree on one definition.
@@ -105,6 +107,9 @@ type PollRequest struct {
 	// exit-capable peers; they are telemetry only and never grant routes.
 	SelectedExitID string `json:"selectedExitID,omitempty"`
 	ActiveExitID   string `json:"activeExitID,omitempty"`
+	// RemoteServices is always represented on the wire: nil preserves the last
+	// observation after a transient local detector failure, while [] clears it.
+	RemoteServices []remoteaccess.ServiceAdvertisement `json:"remoteServices"`
 	// SessionToken proves this caller owns NodeID (security review §1).
 	SessionToken string `json:"sessionToken"`
 }

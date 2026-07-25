@@ -31,10 +31,11 @@ private enum MenuSupportTests {
         precondition(exitStatus.exitClients.count == 1)
         precondition(exitStatus.exitClients[0].state == "active")
 
-        let remote = Data(#"{"state":"Running","self":{"name":"phone","meshIP":"100.64.0.2"},"peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true}],"activeExit":"","killSwitch":false}"#.utf8)
+        let remote = Data(#"{"state":"Running","self":{"name":"phone","meshIP":"100.64.0.2"},"peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true,"remoteServices":[{"kind":"rdp","port":3389,"targetMeshIp":"100.64.0.8"}]}],"activeExit":"","killSwitch":false}"#.utf8)
         let remoteStatus = try JSONDecoder().decode(MeshStatus.self, from: remote)
         precondition(remoteStatus.peers[0].platform == "windows")
         precondition(remoteStatus.peers[0].remoteAccessAllowed == true)
+        precondition(remoteStatus.peers[0].remoteServices == [RemoteService(kind: "rdp", port: 3389, targetMeshIp: "100.64.0.8")])
 
         precondition(EnrollmentCode.valid("ratelmesh-ab12-cd34-ef56"))
         precondition(EnrollmentCode.valid("  RATELMESH-AB12-CD34-EF56\n"))

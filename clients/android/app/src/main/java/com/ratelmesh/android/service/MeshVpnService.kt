@@ -352,7 +352,7 @@ class MeshVpnService : Service() {
     }
 
     private fun notification(connecting: Boolean) = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(R.drawable.ic_mesh)
+        .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle(
             if (connecting) getString(R.string.vpn_notification_connecting)
             else getString(R.string.vpn_notification_title),

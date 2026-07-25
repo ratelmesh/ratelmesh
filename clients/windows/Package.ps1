@@ -34,6 +34,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'ratelmeshd Windows build failed' }
     & go build -trimpath -o (Join-Path $bundle 'ratelmesh.exe') '.\cmd\ratelmesh'
     if ($LASTEXITCODE -ne 0) { throw 'ratelmesh Windows build failed' }
+    & go build -trimpath -o (Join-Path $bundle 'ratelmesh-relay.exe') '.\cmd\ratelmesh-relay'
+    if ($LASTEXITCODE -ne 0) { throw 'ratelmesh-relay Windows build failed' }
 } finally {
     Pop-Location
     $env:GOOS = $oldGoos

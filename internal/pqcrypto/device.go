@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/ratelmesh/ratelmesh/internal/atomicfile"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/atomicfile"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 const (

@@ -10,7 +10,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/shan25519/ratelmesh/internal/remoteservice"
 )
 
 // LocalAPI is ratelmeshd's loopback control surface, served over a unix socket that
@@ -20,6 +23,14 @@ import (
 type LocalAPI struct {
 	d    *Daemon
 	path string
+
+	remoteOnce      sync.Once
+	remoteManager   *remoteservice.Manager
+	remoteConfirmer *remoteservice.Confirmer
+	remoteErr       error
+	doctorRunOnce   sync.Once
+	doctorRun       chan struct{}
+	doctorRepairMu  sync.Mutex
 }
 
 // NewLocalAPI creates the local API bound to socket path.
@@ -212,6 +223,10 @@ func (a *LocalAPI) buildMux() *http.ServeMux {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"ip": ip})
 	})
+	mux.HandleFunc("POST /localapi/remote-services", a.handleRemoteServices)
+	mux.HandleFunc("POST /localapi/remote-services/start", a.handleRemoteServiceStart)
+	mux.HandleFunc("POST /localapi/doctor", a.handleDoctor)
+	mux.HandleFunc("POST /localapi/doctor/repair", a.handleDoctorRepair)
 	return mux
 }
 

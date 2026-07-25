@@ -18,7 +18,7 @@ import (
 	"sort"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // Authority holds the signing key. In production this lives offline; the coord
@@ -119,6 +119,15 @@ func (a *Authority) PQPublicKeyString() string {
 // Sign returns a signature over the node's identity→key binding.
 func (a *Authority) Sign(n types.Node) []byte {
 	return ed25519.Sign(a.priv, canonical(n))
+}
+
+// SignBytes signs an already domain-separated protocol message. Callers must own
+// the domain separation and canonical serialization for their protocol.
+func (a *Authority) SignBytes(data []byte) ([]byte, error) {
+	if a == nil || len(a.priv) != ed25519.PrivateKeySize {
+		return nil, ErrBadKey
+	}
+	return ed25519.Sign(a.priv, data), nil
 }
 
 // SignRoutes signs the complete stable routing credential. It is separate from

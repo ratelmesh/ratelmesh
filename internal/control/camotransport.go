@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/transport"
+	"github.com/shan25519/ratelmesh/internal/transport"
 )
 
 // NewCamoClient builds a coord client whose HTTP connection is carried inside a

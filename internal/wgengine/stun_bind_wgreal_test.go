@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ratelmesh/ratelmesh/internal/magicsock"
+	"github.com/shan25519/ratelmesh/internal/magicsock"
 	"golang.zx2c4.com/wireguard/conn"
 )
 

@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"slices"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // WindowsTunnelName is the WireGuard for Windows adapter name, derived by the

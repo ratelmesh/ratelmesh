@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ratelmesh/ratelmesh/internal/atomicfile"
-	"github.com/ratelmesh/ratelmesh/internal/control"
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/atomicfile"
+	"github.com/shan25519/ratelmesh/internal/control"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // persistentState is the small amount of identity ratelmeshd keeps across restarts:

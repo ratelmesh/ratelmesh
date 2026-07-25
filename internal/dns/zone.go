@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/shan25519/ratelmesh/internal/types"
 )
 
 // DefaultSuffix is the MagicDNS domain suffix.
