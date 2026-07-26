@@ -50,7 +50,14 @@ private enum MenuSupportTests {
         precondition(!appSource.localizedCaseInsensitiveContains("shi" + "eld"))
         precondition(appSource.contains("colorScheme == .dark ? cyan : accessibleCyan"))
         precondition(!appSource.contains(#"url(forResource: "RatelMesh", withExtension: "icns")"#))
-        precondition(appSource.contains("RatelMeshBrandMark(size: 18, template: true)"))
+        precondition(appSource.contains("RatelMeshBrandMark(size: 18, template: true, decorative: false)"))
+        precondition(appSource.contains(".accessibilityHidden(decorative)"))
+        precondition(
+            appSource.components(separatedBy: "RatelMeshBrandMark(size: 20, template: true)").count == 3
+        )
+        precondition(!appSource.contains(".resizable()"))
+        precondition(!appSource.contains(".scaledToFit()"))
+        precondition(appSource.contains("copy.size = NSSize(width: size, height: size)"))
         precondition(appSource.contains(#"forResource: "BrandMarkDark", withExtension: "png""#))
         precondition(appSource.contains(#"forInfoDictionaryKey: "RatelMeshMenuTemplatePNG""#))
 

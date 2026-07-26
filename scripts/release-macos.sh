@@ -17,6 +17,7 @@ RELEASE_KEY="${RATELMESH_RELEASE_KEY:-$HOME/.config/ratelmesh/release-ed25519.ke
 APPLICATION_IDENTITY="${RATELMESH_APPLICATION_IDENTITY:-}"
 INSTALLER_IDENTITY="${RATELMESH_INSTALLER_IDENTITY:-}"
 NOTARY_PROFILE="${RATELMESH_NOTARY_PROFILE:-}"
+NOTARY_KEYCHAIN="${RATELMESH_NOTARY_KEYCHAIN:-}"
 PACKAGE_NAME="RatelMesh-macOS-$VERSION-universal.pkg"
 PACKAGE_URL="https://download.ratelmesh.com/download/$PACKAGE_NAME"
 
@@ -59,7 +60,11 @@ RATELMESH_INSTALLER_IDENTITY="$INSTALLER_IDENTITY" \
     "$VERSION" "$OUTDIR/update/RatelMesh-macOS-$VERSION-update.pkg" "$OUTDIR/$PACKAGE_NAME"
 
 pkgutil --check-signature "$OUTDIR/$PACKAGE_NAME" | grep -Fq "Developer ID Installer"
-xcrun notarytool submit "$OUTDIR/$PACKAGE_NAME" --keychain-profile "$NOTARY_PROFILE" --wait
+NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+  NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
+fi
+xcrun notarytool submit "$OUTDIR/$PACKAGE_NAME" "${NOTARY_ARGS[@]}" --wait
 xcrun stapler staple "$OUTDIR/$PACKAGE_NAME"
 xcrun stapler validate "$OUTDIR/$PACKAGE_NAME"
 spctl --assess --type install -vv "$OUTDIR/$PACKAGE_NAME"

@@ -93,13 +93,13 @@ private enum RatelMeshBrand {
 private struct RatelMeshBrandMark: View {
     let size: CGFloat
     var template = false
+    var decorative = true
 
     var body: some View {
         Image(nsImage: image)
-            .resizable()
-            .scaledToFit()
+            .interpolation(.high)
             .frame(width: size, height: size)
-            .accessibilityHidden(true)
+            .accessibilityHidden(decorative)
     }
 
     private var image: NSImage {
@@ -109,14 +109,17 @@ private struct RatelMeshBrandMark: View {
            let original = NSImage(data: data),
            let copy = original.copy() as? NSImage {
             copy.isTemplate = true
+            copy.size = NSSize(width: size, height: size)
             return copy
         }
 
-        // The panel uses a transparent on-dark export so the application icon's
-        // opaque white canvas never appears as a square in dark mode.
-        return Bundle.main.url(forResource: "BrandMarkDark", withExtension: "png")
+        let original = Bundle.main.url(forResource: "BrandMarkDark", withExtension: "png")
             .flatMap(NSImage.init(contentsOf:))
             ?? NSApplication.shared.applicationIconImage
+            ?? NSImage(size: NSSize(width: size, height: size))
+        guard let copy = original.copy() as? NSImage else { return original }
+        copy.size = NSSize(width: size, height: size)
+        return copy
     }
 }
 
@@ -222,7 +225,7 @@ private struct Panel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 HStack(spacing: 8) {
-                    RatelMeshBrandMark(size: 25)
+                    RatelMeshBrandMark(size: 20, template: true)
                     Text("RatelMesh").font(.headline)
                 }
                 .accessibilityElement(children: .combine)
@@ -518,7 +521,7 @@ private struct Panel: View {
     @ViewBuilder
     private var enrollmentPrompt: some View {
         HStack(spacing: 8) {
-            RatelMeshBrandMark(size: 22)
+            RatelMeshBrandMark(size: 20, template: true)
             Text(Copy.text("Waiting for enrollment", "等待注册")).font(.headline)
         }
         .foregroundStyle(.primary)
@@ -704,7 +707,7 @@ private struct RatelMeshMenuApp: App {
         MenuBarExtra {
             Panel(store: store, updater: updater)
         } label: {
-            RatelMeshBrandMark(size: 18, template: true)
+            RatelMeshBrandMark(size: 18, template: true, decorative: false)
                 .accessibilityLabel("RatelMesh")
         }
         .menuBarExtraStyle(.window)
