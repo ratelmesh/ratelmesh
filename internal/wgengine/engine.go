@@ -138,7 +138,7 @@ type Engine interface {
 
 // InterfaceNamer is implemented by engines that own a named OS interface (the
 // real data plane). The daemon uses it to allow traffic out the WireGuard
-// interface in the kill switch (Grok #1). The stub engine does not implement it.
+// interface in the kill switch. The stub engine does not implement it.
 type InterfaceNamer interface {
 	// InterfaceName returns the WG interface name ("ratelmesh0" on Linux/Windows,
 	// "utunN" on macOS), or "" if the interface is not up yet.

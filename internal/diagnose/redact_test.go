@@ -127,20 +127,20 @@ func TestRedactorPatterns(t *testing.T) {
 		},
 		{
 			name:       "email",
-			in:         "contact songling@example.com please",
-			mustAbsent: []string{"songling@example.com"},
+			in:         "contact person@example.com please",
+			mustAbsent: []string{"person@example.com"},
 			mustHave:   []string{"[redacted:email:"},
 		},
 		{
 			name:       "unix home path",
-			in:         "log at /Users/songling/Library/rm/state.json today",
-			mustAbsent: []string{"/Users/songling/"},
+			in:         "log at /Users/example/Library/rm/state.json today",
+			mustAbsent: []string{"/Users/example/"},
 			mustHave:   []string{"/Users/[redacted:user:", "/Library/rm/state.json"},
 		},
 		{
 			name:       "windows home path",
-			in:         `file C:\Users\songling\AppData\rm.log`,
-			mustAbsent: []string{`C:\Users\songling\`},
+			in:         `file C:\Users\example\AppData\rm.log`,
+			mustAbsent: []string{`C:\Users\example\`},
 			mustHave:   []string{"[redacted:user:"},
 		},
 		{

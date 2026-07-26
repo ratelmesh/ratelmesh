@@ -57,7 +57,7 @@ type Policy struct {
 	// TunnelInterface is the WireGuard interface name (Linux "ratelmesh0", macOS a
 	// dynamic "utunN"). Traffic OUT this interface is allowed, so full-tunnel app
 	// packets — which hit the OUTPUT hook with a PUBLIC destination before
-	// WireGuard encapsulates them — are not dropped by the kill switch (Grok #1).
+	// WireGuard encapsulates them — are not dropped by the kill switch.
 	// Safe: if the tunnel is down WireGuard drops these packets, so no cleartext
 	// leaks; only encrypted traffic ever reaches the physical interface.
 	TunnelInterface string

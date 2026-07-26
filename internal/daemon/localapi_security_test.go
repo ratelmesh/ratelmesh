@@ -64,15 +64,15 @@ func TestBrowserGuardRejectsCrossSiteMutationAndDNSRebinding(t *testing.T) {
 	}
 }
 
-// TestGUIDoesNotInnerHTMLResponseData is Grok review #6 (client side): the local
-// GUI must render peer/self names via textContent, never innerHTML, so a
+// TestGUIDoesNotInnerHTMLResponseData verifies that the local GUI renders
+// peer/self names via textContent, never innerHTML, so a
 // client-chosen hostname can't inject script into the loopback GUI origin.
 func TestGUIDoesNotInnerHTMLResponseData(t *testing.T) {
 	if !strings.Contains(guiHTML, "textContent") {
 		t.Fatal("GUI no longer uses textContent — response data may be unescaped")
 	}
 	// Ban ANY innerHTML assignment — response data must only reach the DOM via
-	// textContent (Grok follow-up #6).
+	// textContent.
 	if strings.Contains(guiHTML, "innerHTML") {
 		t.Fatal("GUI still uses innerHTML somewhere — response data may be an XSS sink")
 	}

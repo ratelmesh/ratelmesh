@@ -2508,7 +2508,7 @@ func (d *Daemon) killSwitchPolicyForRelay(exitSelected bool, exitEndpoints []str
 	}
 	// Allow traffic out the WireGuard interface, or full-tunnel app packets (which
 	// hit OUTPUT with a public dest before encapsulation) are dropped by the kill
-	// switch, breaking exit egress rather than just preventing leaks (Grok #1).
+	// switch, breaking exit egress rather than just preventing leaks.
 	if namer, ok := d.engine.(wgengine.InterfaceNamer); ok {
 		policy.TunnelInterface = namer.InterfaceName()
 	}
@@ -2519,7 +2519,7 @@ func (d *Daemon) applyKillSwitchPolicy(policy netguard.Policy) error {
 	if err := d.guard.Apply(policy); err != nil {
 		// Do NOT report the kill switch as armed when the firewall failed to load:
 		// status would show KillSwitch:true with no rules in place, a false sense of
-		// leak protection on the exact tool meant to prevent leaks (Grok review #2).
+		// leak protection on the exact tool meant to prevent leaks.
 		d.log.Error("kill switch apply failed — reporting DISARMED", "err", err)
 		return fmt.Errorf("apply kill switch policy: %w", err)
 	}

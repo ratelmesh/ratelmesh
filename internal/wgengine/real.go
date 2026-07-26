@@ -79,7 +79,7 @@ type RealEngine struct {
 }
 
 // InterfaceName returns the WireGuard interface name (implements InterfaceNamer),
-// so the daemon can allow traffic out it in the kill switch (Grok #1).
+// so the daemon can allow traffic out it in the kill switch.
 func (e *RealEngine) InterfaceName() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()

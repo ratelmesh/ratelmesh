@@ -6,7 +6,7 @@ package daemon
 // The UI is bilingual (English / 简体中文): it auto-picks from the browser
 // language and can be toggled; the choice persists in localStorage. All response
 // data reaches the DOM via textContent only (never innerHTML), so a client-chosen
-// hostname cannot inject script into the loopback GUI origin (Grok #6).
+// hostname cannot inject script into the loopback GUI origin.
 const guiHTML = `<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

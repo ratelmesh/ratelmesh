@@ -155,8 +155,8 @@ func TestKillSwitchBlocksBothAddressFamiliesOffTunnel(t *testing.T) {
 	}
 }
 
-// TestKillSwitchAllowsTunnelInterface is Grok review #1: with a TunnelInterface
-// set, the rendered rules allow traffic OUT the WireGuard interface, so a
+// TestKillSwitchAllowsTunnelInterface verifies that with a TunnelInterface set,
+// the rendered rules allow traffic OUT the WireGuard interface, so a
 // full-tunnel app packet (public dest, pre-encapsulation) is not dropped —
 // arming the kill switch must not break exit egress.
 func TestKillSwitchAllowsTunnelInterface(t *testing.T) {
