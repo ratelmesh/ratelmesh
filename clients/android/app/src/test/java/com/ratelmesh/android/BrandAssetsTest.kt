@@ -20,17 +20,17 @@ class BrandAssetsTest {
     @Test
     fun `accepted launcher exports remain exact`() {
         val expected = mapOf(
-            "mipmap-mdpi/ic_launcher.png" to "24ee7a2baf1770a4c15c32887321a1bd98a77efca737dcd4c567eba42af8b5c0",
-            "mipmap-hdpi/ic_launcher.png" to "59e221fbf2d63229507d9aad1abda1602fa535208eab57c4fc7b08dca2cb1a19",
-            "mipmap-xhdpi/ic_launcher.png" to "b5b9c608f472c0d4eda0ea1ebf4fe91c44cbe9cb8e8ebf80d432a556d1b1f0e3",
-            "mipmap-xxhdpi/ic_launcher.png" to "48772cab688e2887280417684855908ae9025b2fa15117ab05a2887d69f47983",
-            "mipmap-xxxhdpi/ic_launcher.png" to "b694482a44f1046b2fbb2e251e416a58007137cb9bebb218446f616928ab222d",
+            "mipmap-mdpi/ic_launcher.png" to "2fecb168a223bd740c3436e80970247c468c4d6330ac32ba13bffcd796d79c42",
+            "mipmap-hdpi/ic_launcher.png" to "9c1c5d25011dab4b0cebe9bcf58114192182421ef17f3653244d191d06a8d24c",
+            "mipmap-xhdpi/ic_launcher.png" to "6dc040715acca492127a9346f8b7374c5ee7fa3e9de629540a3426c63470c56d",
+            "mipmap-xxhdpi/ic_launcher.png" to "32ef6368fff9728d6397a5d24658ffae6e76900c92c6ed0835c2f3a4baf86f44",
+            "mipmap-xxxhdpi/ic_launcher.png" to "0ff9321ca925153cf17ac75a42239af2799ccdf7ac1a18f103eadcda45bd68a8",
         )
 
         expected.forEach { (relativePath, digest) ->
             val asset = File(appDir, "src/main/res/$relativePath")
             assertTrue("$relativePath must exist", asset.isFile)
-            assertEquals("$relativePath must remain the accepted micro mark", digest, asset.sha256())
+            assertEquals("$relativePath must remain the accepted v3 mark", digest, asset.sha256())
         }
     }
 
@@ -41,7 +41,8 @@ class BrandAssetsTest {
         assertTrue(source.contains("""android:viewportWidth="512""""))
         assertTrue(source.contains("M81,131C61,113 46,112 34,124"))
         assertTrue(source.contains("""android:fillType="evenOdd""""))
-        assertEquals("the crown must retain all six mesh nodes", 6, "a7,7 0,1 1,-14,0".toRegex().findAll(source).count())
+        assertTrue(source.contains("M192,158L256,132L320,158"))
+        assertEquals("the crown must use the three-endpoint v3 mesh", 3, "a8,8 0,1 1,-16,0".toRegex().findAll(source).count())
         assertFalse("notification icons must remain monochrome", source.contains("#20B9E8", ignoreCase = true))
     }
 

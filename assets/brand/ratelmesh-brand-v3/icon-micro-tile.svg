@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">RatelMesh favicon tile v3</title>
+  <desc id="desc">A simplified honey badger head on a fixed dark tile.</desc>
+  <rect width="64" height="64" rx="14" fill="#0B0F14"/>
+  <path fill="#F4F7F9" d="M8 17c6-7 14-11 24-11s18 4 24 11l-6 9c-6-4-12-5-18-5s-12 1-18 5zM11 29l8 4 5 17-9-6zm42 0-8 4-5 17 9-6z"/>
+  <path fill="#20B9E8" d="m17 34 11 3-6 5-6-2zm30 0-11 3 6 5 6-2z"/>
+  <path fill="#F4F7F9" d="m29 43 3-3 3 3-1 5 3 3-5 3-5-3 3-3z"/>
+</svg>

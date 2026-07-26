@@ -19,8 +19,8 @@ android {
         applicationId = "com.ratelmesh.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 236
-        versionName = "0.2.36"
+        versionCode = 237
+        versionName = "0.2.37"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
