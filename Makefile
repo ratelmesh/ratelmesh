@@ -16,6 +16,7 @@ build-server:
 		echo "Coordinator source is maintained in the private server repository" >&2; \
 		exit 2; \
 	}
+	mkdir -p $(BIN)
 	go build -o $(BIN)/ratelmesh-coord ./cmd/ratelmesh-coord
 
 # Real WireGuard data plane. Requires `wireguard-go` and `wg` on PATH at runtime
