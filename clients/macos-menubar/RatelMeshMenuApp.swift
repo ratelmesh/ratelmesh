@@ -79,6 +79,47 @@ private enum LocalEnrollment {
     }
 }
 
+private enum RatelMeshBrand {
+    static let black = Color(red: 11 / 255, green: 15 / 255, blue: 20 / 255)
+    static let white = Color(red: 244 / 255, green: 247 / 255, blue: 249 / 255)
+    static let cyan = Color(red: 32 / 255, green: 185 / 255, blue: 232 / 255)
+    static let accessibleCyan = Color(red: 0 / 255, green: 106 / 255, blue: 140 / 255)
+
+    static func action(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? cyan : accessibleCyan
+    }
+}
+
+private struct RatelMeshBrandMark: View {
+    let size: CGFloat
+    var template = false
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+
+    private var image: NSImage {
+        // The transparent menu mark is already bundled as Info.plist data; no runtime file lookup is required.
+        if template,
+           let data = Bundle.main.object(forInfoDictionaryKey: "RatelMeshMenuTemplatePNG") as? Data,
+           let original = NSImage(data: data),
+           let copy = original.copy() as? NSImage {
+            copy.isTemplate = true
+            return copy
+        }
+
+        // The panel uses a transparent on-dark export so the application icon's
+        // opaque white canvas never appears as a square in dark mode.
+        return Bundle.main.url(forResource: "BrandMarkDark", withExtension: "png")
+            .flatMap(NSImage.init(contentsOf:))
+            ?? NSApplication.shared.applicationIconImage
+    }
+}
+
 @MainActor
 private final class Store: ObservableObject {
     @Published var status: MeshStatus?
@@ -166,6 +207,7 @@ private final class Store: ObservableObject {
 private struct Panel: View {
     @ObservedObject var store: Store
     @ObservedObject var updater: UpdateStore
+    @Environment(\.colorScheme) private var colorScheme
     @State private var picked = ""
     @State private var enrollmentCode = ""
     @State private var enrollmentBusy = false
@@ -179,8 +221,11 @@ private struct Panel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("RatelMesh", systemImage: "shield.lefthalf.filled")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    RatelMeshBrandMark(size: 25)
+                    Text("RatelMesh").font(.headline)
+                }
+                .accessibilityElement(children: .combine)
                 Spacer()
                 Picker(Copy.text("Language", "语言"), selection: $language) {
                     ForEach(Copy.Language.allCases) { option in
@@ -197,7 +242,7 @@ private struct Panel: View {
                 let exitVerificationPending = !status.activeExit.isEmpty && !status.exitTrafficVerified
                 let routePending = store.requestedExit != nil || (!status.selectedExit.isEmpty && status.activeExit.isEmpty) || exitVerificationPending
                 let routeVerified = store.requestedExit == nil && (status.exitTrafficVerified || (status.selectedExit.isEmpty && status.activeExit.isEmpty))
-                let routeColor: Color = routePending ? .orange : (status.activeExit.isEmpty ? .blue : .green)
+                let routeColor: Color = routePending ? .orange : (status.activeExit.isEmpty ? RatelMeshBrand.action(for: colorScheme) : .green)
                 HStack(spacing: 7) {
                     if routePending { ProgressView().controlSize(.small) }
                     else { Image(systemName: routeVerified ? "checkmark.seal.fill" : "exclamationmark.triangle.fill").foregroundStyle(routeColor) }
@@ -362,6 +407,7 @@ private struct Panel: View {
         }
         .padding(14)
         .frame(width: 430)
+        .tint(RatelMeshBrand.action(for: colorScheme))
         .onAppear {
             if picked.isEmpty { picked = store.status?.activeExit ?? exits.first?.name ?? "" }
         }
@@ -471,8 +517,12 @@ private struct Panel: View {
 
     @ViewBuilder
     private var enrollmentPrompt: some View {
-        Label(Copy.text("Waiting for enrollment", "等待注册"), systemImage: "shield.lefthalf.filled")
-            .foregroundStyle(.blue)
+        HStack(spacing: 8) {
+            RatelMeshBrandMark(size: 22)
+            Text(Copy.text("Waiting for enrollment", "等待注册")).font(.headline)
+        }
+        .foregroundStyle(.primary)
+        .accessibilityElement(children: .combine)
         Text(Copy.text(
             "Paste the one-use code from your RatelMesh account. No Terminal commands are required.",
             "粘贴 RatelMesh 账户生成的一次性入网码，无需使用终端命令。"
@@ -654,7 +704,8 @@ private struct RatelMeshMenuApp: App {
         MenuBarExtra {
             Panel(store: store, updater: updater)
         } label: {
-            Label("RatelMesh", systemImage: "shield.lefthalf.filled")
+            RatelMeshBrandMark(size: 18, template: true)
+                .accessibilityLabel("RatelMesh")
         }
         .menuBarExtraStyle(.window)
     }

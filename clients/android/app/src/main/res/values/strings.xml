@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">RatelMesh</string>
     <string name="brand_name">RATELMESH</string>
-    <string name="tagline">Your private mesh, on the move.</string>
+    <string name="tagline">Your network. Your rules.</string>
     <string name="connection">Connection</string>
     <string name="first_connection">Connect this device</string>
     <string name="enrollment_hint">Paste the one-use enrollment code from your private space. RatelMesh already knows the official coordinator.</string>
@@ -48,6 +48,10 @@
     <string name="use_exit_named">Use EXIT · %1$s</string>
     <string name="language_button">Language · %1$s</string>
     <string name="language_system">System language</string>
+    <string name="language_short_system">Auto</string>
+    <string name="language_short_simplified">简</string>
+    <string name="language_short_traditional">繁</string>
+    <string name="language_short_english">EN</string>
     <string name="no_online_exit_nodes">No online exit nodes</string>
     <string name="path_direct">direct</string>
     <string name="path_relay">relay</string>

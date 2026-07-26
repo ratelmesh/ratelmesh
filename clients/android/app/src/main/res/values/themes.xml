@@ -1,8 +1,9 @@
 <resources>
     <style name="Theme.RatelMesh" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F6F3EC</item>
-        <item name="android:navigationBarColor">#F6F3EC</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0B0F14</item>
+        <item name="android:navigationBarColor">#0B0F14</item>
+        <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

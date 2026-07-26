@@ -33,6 +33,7 @@ APP_INFO="$WORK/package/Payload/usr/local/ratelmesh/share/RatelMesh.app/Contents
 test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP_INFO")" = "$VERSION"
 test "$(plutil -extract CFBundleIconFile raw -o - "$APP_INFO")" = "RatelMesh"
 test -s "$WORK/package/Payload/usr/local/ratelmesh/share/RatelMesh.app/Contents/Resources/RatelMesh.icns"
+test -s "$WORK/package/Payload/usr/local/ratelmesh/share/RatelMesh.app/Contents/Resources/BrandMarkDark.png"
 rg -q '\[ -t 0 \]' "$WORK/package/Payload/usr/local/ratelmesh/bin/ratelmesh-enroll"
 rg -q 'private authorization pipe' "$WORK/package/Payload/usr/local/ratelmesh/bin/ratelmesh-enroll"
 test "$(plutil -extract RatelMeshUpdateFeedURL raw -o - "$APP_INFO")" = "https://download.ratelmesh.com/download/macos/latest.json"

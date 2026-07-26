@@ -42,6 +42,23 @@ private enum MenuSupportTests {
         precondition(!EnrollmentCode.valid("ratelmesh-ab12-cd34"))
         precondition(!EnrollmentCode.valid("ratelmesh-ab!2-cd34-ef56"))
 
+        let sourceDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appSource = try String(
+            contentsOf: sourceDirectory.appendingPathComponent("RatelMeshMenuApp.swift"),
+            encoding: .utf8
+        )
+        precondition(!appSource.localizedCaseInsensitiveContains("shi" + "eld"))
+        precondition(appSource.contains("colorScheme == .dark ? cyan : accessibleCyan"))
+        precondition(!appSource.contains(#"url(forResource: "RatelMesh", withExtension: "icns")"#))
+        precondition(appSource.contains("RatelMeshBrandMark(size: 18, template: true)"))
+        precondition(appSource.contains(#"forResource: "BrandMarkDark", withExtension: "png""#))
+        precondition(appSource.contains(#"forInfoDictionaryKey: "RatelMeshMenuTemplatePNG""#))
+
+        let infoData = try Data(contentsOf: sourceDirectory.appendingPathComponent("Info.plist"))
+        let info = try PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any]
+        let menuImage = info?["RatelMeshMenuTemplatePNG"] as? Data
+        precondition(menuImage?.isEmpty == false)
+
         print("macOS menu support tests passed")
     }
 }

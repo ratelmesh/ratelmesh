@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">RatelMesh</string>
     <string name="brand_name">RATELMESH</string>
-    <string name="tagline">随时随地，连接你的私人网络。</string>
+    <string name="tagline">你的网络，由你做主。</string>
     <string name="connection">连接设置</string>
     <string name="first_connection">连接这台设备</string>
     <string name="enrollment_hint">粘贴私人空间生成的一次性入网码即可。官方协调器已经自动配置。</string>
@@ -48,6 +48,10 @@
     <string name="use_exit_named">使用出口 EXIT · %1$s</string>
     <string name="language_button">语言 · %1$s</string>
     <string name="language_system">跟随系统</string>
+    <string name="language_short_system">自动</string>
+    <string name="language_short_simplified">简</string>
+    <string name="language_short_traditional">繁</string>
+    <string name="language_short_english">EN</string>
     <string name="no_online_exit_nodes">没有在线出口设备</string>
     <string name="path_direct">直连</string>
     <string name="path_relay">中继</string>

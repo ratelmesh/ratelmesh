@@ -2,11 +2,23 @@ import NetworkExtension
 import SwiftUI
 import UIKit
 
+private enum RatelMeshBrand {
+    static let black = Color(red: 11 / 255, green: 15 / 255, blue: 20 / 255)
+    static let white = Color(red: 244 / 255, green: 247 / 255, blue: 249 / 255)
+    static let cyan = Color(red: 32 / 255, green: 185 / 255, blue: 232 / 255)
+    static let accessibleCyan = Color(red: 0 / 255, green: 106 / 255, blue: 140 / 255)
+
+    static func action(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? cyan : accessibleCyan
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: AppViewModel
     @Binding var language: ProductLanguage
     @AppStorage("geographicPrivacyAcknowledgedV1") private var privacyAcknowledged = false
     @State private var showingPrivacy = false
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -22,7 +34,7 @@ struct ContentView: View {
                     HStack(spacing: 10) {
                         if model.requestedExit != nil { ProgressView() }
                         else if !model.activeExit.isEmpty && model.meshStatus?.exitTrafficVerified != true { ProgressView() }
-                        else { Image(systemName: "checkmark.circle.fill").foregroundStyle(model.activeExit.isEmpty ? .blue : .green) }
+                        else { Image(systemName: "checkmark.circle.fill").foregroundStyle(model.activeExit.isEmpty ? RatelMeshBrand.action(for: colorScheme) : .green) }
                         VStack(alignment: .leading, spacing: 3) {
                             Text(t("当前互联网线路", "CURRENT INTERNET ROUTE"))
                                 .font(.caption).foregroundStyle(.secondary)
@@ -109,6 +121,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("RatelMesh")
+            .tint(RatelMeshBrand.action(for: colorScheme))
             .toolbar {
                 Button(t("设置", "Settings"), systemImage: "gearshape") { model.showingSettings = true }
             }
@@ -176,12 +189,22 @@ struct ContentView: View {
 
     private var statusCard: some View {
         VStack(spacing: 18) {
-            Image(systemName: model.isConnected ? "checkmark.shield.fill" : "shield.slash")
-                .font(.system(size: 52))
-                .foregroundStyle(model.isConnected ? .green : .secondary)
+            Image("BrandMarkDark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 76, height: 76)
+                .accessibilityHidden(true)
             VStack(spacing: 4) {
-                Text(statusTitle).font(.title2.bold())
-                Text(statusDetail).font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(model.isConnected ? RatelMeshBrand.cyan : Color.secondary)
+                        .frame(width: 9, height: 9)
+                    Text(statusTitle).font(.title2.bold())
+                }
+                .accessibilityElement(children: .combine)
+                Text(statusDetail)
+                    .font(.subheadline)
+                    .foregroundStyle(RatelMeshBrand.white.opacity(0.72))
             }
             Button {
                 if model.isConnected { model.disconnect() }
@@ -192,12 +215,17 @@ struct ContentView: View {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(model.isConnected ? .red : .accentColor)
+            .tint(model.isConnected ? .red : RatelMeshBrand.action(for: colorScheme))
             .disabled(model.isBusy || model.isTransitioning)
         }
         .padding(24)
         .frame(maxWidth: .infinity)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 22))
+        .foregroundStyle(RatelMeshBrand.white)
+        .background(RatelMeshBrand.black, in: RoundedRectangle(cornerRadius: 22))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(RatelMeshBrand.cyan.opacity(model.isConnected ? 0.55 : 0.20))
+        )
         .padding(.horizontal)
     }
 

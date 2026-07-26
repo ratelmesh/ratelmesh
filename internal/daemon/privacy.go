@@ -9,16 +9,16 @@ const privacyHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RatelMesh — Location Privacy</title>
 <style>
-:root{color-scheme:light dark;font:15px/1.55 system-ui,sans-serif}
-body{margin:0;background:#f6f7f9;color:#171717}.wrap{max-width:820px;margin:auto;padding:24px}
+:root{color-scheme:dark;font:15px/1.55 system-ui,sans-serif;--ink:#f4f7f9;--muted:#9aabb5;--panel:#111820;--line:#27333d;--cyan:#20b9e8;--warning:#d8902f}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 78% -10%,#123647 0,transparent 38%),#0b0f14;color:var(--ink)}.wrap{max-width:820px;margin:auto;padding:24px}
 header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
-h1{font-size:1.65rem;margin:0}h2{font-size:1.08rem;margin:.1rem 0 .55rem}.sub{color:#666;margin:.25rem 0 0}
-.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:16px 18px;margin:12px 0;box-shadow:0 1px 2px #0001}
-.row{display:flex;align-items:flex-start;gap:10px}.mark{font-size:1.15rem;line-height:1.5}.muted{color:#666}.warn{color:#9a3412}
-button{font:inherit;border:0;border-radius:8px;padding:8px 13px;background:#b45309;color:white;cursor:pointer}
-button.secondary{background:#5b6472}code{font-family:ui-monospace,monospace;word-break:break-all}
-ul{margin:.4rem 0 .1rem;padding-left:1.25rem}li{margin:.35rem 0}.result{padding:10px;background:#8881;border-radius:8px;white-space:pre-wrap;min-height:24px}
-a{color:#b45309}#lang{min-width:62px}@media(prefers-color-scheme:dark){body{background:#131519;color:#eee}.card{background:#1d2026;border-color:#343944}.sub,.muted{color:#aaa}.warn{color:#fb923c}}
+h1{font-size:1.65rem;margin:0;letter-spacing:-.025em}h2{font-size:1.08rem;margin:.1rem 0 .55rem}.sub,.muted{color:var(--muted)}.sub{margin:.25rem 0 0}.warn{color:var(--warning)}
+.card{background:#111820e8;border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:12px 0;box-shadow:0 18px 48px #0005}
+.row{display:flex;align-items:flex-start;gap:10px}.mark{font-size:1.15rem;line-height:1.5}
+button{font:inherit;border:0;border-radius:8px;padding:8px 13px;background:var(--cyan);color:#0b0f14;font-weight:700;cursor:pointer}
+button.secondary{background:#27333d;color:var(--ink)}button:focus-visible,a:focus-visible{outline:3px solid var(--cyan);outline-offset:2px}code{font-family:ui-monospace,monospace;word-break:break-all}
+ul{margin:.4rem 0 .1rem;padding-left:1.25rem}li{margin:.35rem 0}.result{padding:10px;border:1px solid var(--line);background:#0b0f14;border-radius:8px;white-space:pre-wrap;min-height:24px}
+a{color:#66d3f2}#lang{min-width:62px}@media(max-width:620px){.wrap{padding:18px 16px}header{align-items:flex-start}.card{padding:15px}}
 </style></head><body><div class="wrap">
 <header><div><h1 id="title"></h1><p class="sub" id="subtitle"></p></div><button id="lang" class="secondary"></button></header>
 <div class="card"><h2 id="networkTitle"></h2><div id="networkStatus" class="result"></div><p class="muted" id="networkHelp"></p></div>

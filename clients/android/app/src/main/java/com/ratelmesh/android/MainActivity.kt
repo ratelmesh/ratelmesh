@@ -13,9 +13,14 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-	import androidx.core.content.ContextCompat
+import androidx.core.content.ContextCompat
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,7 +28,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -33,6 +40,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -46,10 +54,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -108,8 +121,8 @@ class MainActivity : ComponentActivity() {
             var showPrivacy by remember {
                 mutableStateOf(!privacyPreferences.getBoolean("geographic_privacy_v1", false))
             }
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = Sand) {
+            RatelMeshTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     MeshScreen(
                         initialSettings = initial,
                         selectedLanguage = AppLanguagePreferences.load(this),
@@ -214,11 +227,6 @@ private fun GeographicPrivacyDialog(
     )
 }
 
-private val Sand = Color(0xFFF6F3EC)
-private val Ink = Color(0xFF1E1E1E)
-private val Orange = Color(0xFFFF9F1C)
-private val Green = Color(0xFF16825D)
-
 @Composable
 private fun VpnDisclosureDialog(onAccept: () -> Unit, onDecline: () -> Unit) {
     AlertDialog(
@@ -264,20 +272,26 @@ private fun MeshScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp, vertical = 30.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(stringResource(R.string.brand_name), color = Orange, fontWeight = FontWeight.Black)
-            LanguageSelector(selectedLanguage, onLanguage)
-        }
-        Text(stringResource(R.string.tagline), style = MaterialTheme.typography.headlineMedium, color = Ink)
+        BrandHeader(selectedLanguage, onLanguage)
+        Text(
+            stringResource(R.string.tagline),
+            style = MaterialTheme.typography.headlineLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontWeight = FontWeight.Black,
+        )
 
         StatusCard(state)
 
         if (!active) {
-            Text(stringResource(R.string.first_connection), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(stringResource(R.string.enrollment_hint), style = MaterialTheme.typography.bodyMedium, color = Color.DarkGray)
+            SectionLabel(stringResource(R.string.first_connection))
+            Text(
+                stringResource(R.string.enrollment_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             OutlinedTextField(
                 value = authKey,
                 onValueChange = { authKey = it.lowercase().replace(" ", ""); inputError = null },
@@ -320,7 +334,10 @@ private fun MeshScreen(
                 onClick = onDisconnect,
                 enabled = state.phase != ConnectionPhase.DISCONNECTING,
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Ink),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                ),
             ) {
                 Text(
                     stringResource(
@@ -339,16 +356,19 @@ private fun MeshScreen(
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Ink),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
             ) { Text(stringResource(R.string.connect), fontWeight = FontWeight.Bold) }
         }
 
         if (state.phase == ConnectionPhase.CONNECTED) ExitSelector(state, onUseExit, onClearExit)
 
         if (state.exitClients.isNotEmpty()) {
-            Text(stringResource(R.string.exit_clients), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            SectionLabel(stringResource(R.string.exit_clients))
             state.exitClients.forEach { client ->
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                MeshListRow {
                     Column {
                         Text(client.name.ifBlank { client.meshIp }, fontWeight = FontWeight.SemiBold)
                         if (client.meshIp.isNotBlank()) Text(client.meshIp, style = MaterialTheme.typography.bodySmall)
@@ -361,32 +381,38 @@ private fun MeshScreen(
                                 else -> R.string.exit_client_connecting
                             },
                         ),
-                        color = if (client.state == "active") Green else Color.Gray,
+                        color = if (client.state == "active") MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
 
         if (state.peers.isNotEmpty()) {
-            Text(stringResource(R.string.peers), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            SectionLabel(stringResource(R.string.peers))
             state.peers.forEach { peer ->
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                MeshListRow {
                     Column {
                         Text(peer.name.ifBlank { peer.meshIp }, fontWeight = FontWeight.SemiBold)
                         Text("${peer.meshIp} · ${localizedPath(peer.pathType)}", style = MaterialTheme.typography.bodySmall)
                     }
                     Text(
                         stringResource(if (peer.online) R.string.online else R.string.offline),
-                        color = if (peer.online) Green else Color.Gray,
+                        color = if (peer.online) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
         val remotePeers = state.peers.filter { it.remoteAccessAllowed && it.meshIp.isNotBlank() }
         if (remotePeers.isNotEmpty()) {
-            Text(stringResource(R.string.remote_access), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            SectionLabel(stringResource(R.string.remote_access))
             remotePeers.forEach { peer ->
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
                     Text(peer.name.ifBlank { peer.meshIp }, fontWeight = FontWeight.SemiBold)
                     Text("${peer.meshIp} · ${peer.platform}", style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -400,7 +426,11 @@ private fun MeshScreen(
                     }
                 }
             }
-            Text(stringResource(R.string.remote_access_note), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Text(
+                stringResource(R.string.remote_access_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         OutlinedButton(onClick = onPrivacy, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.geo_privacy_open))
@@ -421,11 +451,86 @@ private fun openRemoteAccess(context: Context, scheme: String, meshIp: String, p
 }
 
 @Composable
-private fun LanguageSelector(selected: AppLanguage, onSelect: (AppLanguage) -> Unit) {
+private fun BrandHeader(selectedLanguage: AppLanguage, onSelect: (AppLanguage) -> Unit) {
+    @Composable
+    fun Brand(modifier: Modifier = Modifier) {
+        Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Image(
+                painter = painterResource(R.mipmap.ic_launcher),
+                contentDescription = null,
+                modifier = Modifier.size(34.dp),
+            )
+            Text(
+                stringResource(R.string.brand_name),
+                color = MaterialTheme.colorScheme.onBackground,
+                fontWeight = FontWeight.Black,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(top = 3.dp),
+            )
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val stackHeader = maxWidth < 360.dp || LocalDensity.current.fontScale >= 1.3f
+        if (stackHeader) {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Brand(Modifier.fillMaxWidth())
+                LanguageSelector(
+                    selected = selectedLanguage,
+                    onSelect = onSelect,
+                    modifier = Modifier.align(Alignment.End),
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Brand(Modifier.weight(1f))
+                LanguageSelector(selectedLanguage, onSelect)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionLabel(label: String) {
+    Text(
+        label.uppercase(),
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Black,
+        style = MaterialTheme.typography.labelLarge,
+    )
+}
+
+@Composable
+private fun MeshListRow(content: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
+            .padding(15.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun LanguageSelector(
+    selected: AppLanguage,
+    onSelect: (AppLanguage) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var expanded by remember { mutableStateOf(false) }
-    Box {
-        TextButton(onClick = { expanded = true }) {
-            Text(stringResource(R.string.language_button, languageLabel(selected)))
+    val fullDescription = stringResource(R.string.language_button, languageLabel(selected))
+    Box(modifier = modifier) {
+        TextButton(
+            onClick = { expanded = true },
+            modifier = Modifier.semantics { contentDescription = fullDescription },
+        ) {
+            Text(languageShortLabel(selected))
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             AppLanguage.entries.forEach { language ->
@@ -455,42 +560,68 @@ private fun languageLabel(language: AppLanguage): String = when (language) {
 }
 
 @Composable
+private fun languageShortLabel(language: AppLanguage): String = when (language) {
+    AppLanguage.SYSTEM -> stringResource(R.string.language_short_system)
+    AppLanguage.SIMPLIFIED_CHINESE -> stringResource(R.string.language_short_simplified)
+    AppLanguage.TRADITIONAL_CHINESE -> stringResource(R.string.language_short_traditional)
+    AppLanguage.ENGLISH -> stringResource(R.string.language_short_english)
+}
+
+@Composable
 private fun StatusCard(state: MeshState) {
     val (label, color) = when (state.phase) {
-        ConnectionPhase.DISCONNECTED -> stringResource(R.string.status_disconnected) to Color.Gray
-        ConnectionPhase.CONNECTING -> stringResource(R.string.status_connecting) to Orange
-        ConnectionPhase.CONNECTED -> stringResource(R.string.status_connected) to Green
-        ConnectionPhase.DISCONNECTING -> stringResource(R.string.status_disconnecting) to Orange
-        ConnectionPhase.ERROR -> stringResource(R.string.status_failed) to MaterialTheme.colorScheme.error
+        ConnectionPhase.DISCONNECTED -> stringResource(R.string.status_disconnected) to Color(0xFF9AABB5)
+        ConnectionPhase.CONNECTING -> stringResource(R.string.status_connecting) to MeshCyan
+        ConnectionPhase.CONNECTED -> stringResource(R.string.status_connected) to MeshCyan
+        ConnectionPhase.DISCONNECTING -> stringResource(R.string.status_disconnecting) to MeshCyan
+        ConnectionPhase.ERROR -> stringResource(R.string.status_failed) to CriticalOnDark
     }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = RatelSurface),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, MeshOutline),
     ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(label, color = color, fontWeight = FontWeight.Bold)
+        Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    stringResource(R.string.connection).uppercase(),
+                    color = Color(0xFF91A2AD),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.padding(top = 4.dp).size(8.dp).background(color, CircleShape))
+                    Text(label, color = color, fontWeight = FontWeight.Bold)
+                }
+            }
+            HorizontalDivider(color = MeshOutline)
             // Explain a stuck connection instead of showing "Connecting…" forever:
             // a revoked/expired device needs re-enrollment; otherwise, while still
             // connecting with no mesh IP yet, say we are reaching the coordinator.
             if (state.enrollmentRequired) {
                 Text(
                     stringResource(R.string.enrollment_required),
-                    color = MaterialTheme.colorScheme.error,
+                    color = CriticalOnDark,
                     style = MaterialTheme.typography.bodySmall,
                 )
             } else if (state.phase == ConnectionPhase.CONNECTING && state.meshIp.isBlank()) {
                 Text(
                     stringResource(R.string.status_reaching_coordinator),
-                    color = Color.DarkGray,
+                    color = Color(0xFFB7C4CC),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            if (state.meshIp.isNotBlank()) Text(stringResource(R.string.mesh_ip, state.meshIp))
+            if (state.meshIp.isNotBlank()) {
+                Text(stringResource(R.string.mesh_ip, state.meshIp), color = RatelWhite)
+            }
             if (state.publicKey.isNotBlank()) Text(
                 stringResource(R.string.public_key_short, state.publicKey.take(12)),
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.DarkGray,
+                color = Color(0xFF9AABB5),
             )
         }
     }
@@ -503,14 +634,25 @@ private fun ExitSelector(state: MeshState, onUseExit: (String) -> Unit, onClearE
     LaunchedEffect(state.activeExit, state.selectedExit, state.error) { requestedRoute = null }
     val displayedRoute = requestedRoute ?: state.selectedExit.ifBlank { state.activeExit }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(R.string.exit_route), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        SectionLabel(stringResource(R.string.exit_route))
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = if (displayedRoute.isBlank()) Color.White else if (state.exitTrafficVerified) Color(0xFFE1F3EB) else Color(0xFFFFF1D6)),
+            colors = CardDefaults.cardColors(
+                containerColor = if (displayedRoute.isBlank()) {
+                    MaterialTheme.colorScheme.surface
+                } else {
+                    MaterialTheme.colorScheme.primaryContainer
+                },
+            ),
             shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.current_route), style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
+                Text(
+                    stringResource(R.string.current_route),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Text(
                     when {
                         requestedRoute != null && requestedRoute!!.isBlank() -> stringResource(R.string.switching_to_direct)
@@ -520,7 +662,13 @@ private fun ExitSelector(state: MeshState, onUseExit: (String) -> Unit, onClearE
                         !state.exitTrafficVerified -> stringResource(R.string.exit_verifying, state.activeExit)
                         else -> stringResource(R.string.exit_verified, state.activeExit)
                     },
-                    color = if (displayedRoute.isBlank()) Ink else if (state.exitTrafficVerified) Green else Orange,
+                    color = if (displayedRoute.isBlank()) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else if (state.exitTrafficVerified) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -548,7 +696,12 @@ private fun ExitSelector(state: MeshState, onUseExit: (String) -> Unit, onClearE
                 },
             )
         }
-        if (exits.isEmpty()) Text(stringResource(R.string.no_online_exit_nodes), color = Color.Gray)
+        if (exits.isEmpty()) {
+            Text(
+                stringResource(R.string.no_online_exit_nodes),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -558,7 +711,10 @@ private fun RouteButton(selected: Boolean, label: String, onClick: () -> Unit) {
         Button(
             onClick = onClick,
             modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Color.White),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
         ) { Text("✓ $label", fontWeight = FontWeight.Bold) }
     } else {
         OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) { Text(label) }

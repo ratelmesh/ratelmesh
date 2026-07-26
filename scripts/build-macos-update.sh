@@ -73,6 +73,8 @@ lipo -create "$WORK/ratelmesh-menu-x86_64" "$WORK/ratelmesh-menu-arm64" \
 cp "$REPO/clients/macos-menubar/Info.plist" "$APP/Contents/Info.plist"
 install -m 644 "$REPO/clients/macos-menubar/RatelMesh.icns" \
   "$APP/Contents/Resources/RatelMesh.icns"
+install -m 644 "$REPO/clients/macos-menubar/BrandMarkDark.png" \
+  "$APP/Contents/Resources/BrandMarkDark.png"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "${VERSION//./}" "$APP/Contents/Info.plist"
 plutil -replace RatelMeshUpdateFeedURL -string "$UPDATE_FEED_URL" "$APP/Contents/Info.plist" 2>/dev/null || \

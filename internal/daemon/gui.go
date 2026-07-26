@@ -12,30 +12,36 @@ const guiHTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RatelMesh</title>
 <style>
- :root{color-scheme:light dark}
- body{font:14px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f9;color:#111}
- @media (prefers-color-scheme:dark){body{background:#15171b;color:#e8e8e8}.card{background:#1e2127!important;box-shadow:none!important}th{background:#252932!important}}
- header{background:#b45309;color:#fff;padding:1rem 1.25rem;font-size:1.2rem;font-weight:600;display:flex;justify-content:space-between;align-items:center}
- #langsel{font:inherit;font-size:.8rem;font-weight:600;padding:.25rem .7rem;border-radius:6px;border:1px solid #fff8;background:#fff2;color:#fff;cursor:pointer}
+ :root{color-scheme:dark;--ink:#f4f7f9;--muted:#9aabb5;--panel:#111820;--line:#27333d;--cyan:#20b9e8;--healthy:#16956c;--warning:#d8902f;--critical:#ffb4ab}
+ *{box-sizing:border-box}
+ body{font:14px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;background:radial-gradient(circle at 78% -10%,#123647 0,transparent 38%),#0b0f14;color:var(--ink)}
+ header{border-bottom:1px solid var(--line);background:#0b0f14e8;backdrop-filter:blur(16px);padding:.8rem max(1rem,calc((100vw - 820px)/2 + 1rem));display:flex;justify-content:space-between;align-items:center}
+ .brand{display:flex;align-items:center;gap:.65rem;font-size:1.15rem;font-weight:720;letter-spacing:-.02em}
+ .brand svg{width:34px;height:34px;display:block}
+ #langsel{font:inherit;font-size:.8rem;font-weight:650;padding:.35rem .7rem;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+ #langsel:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid var(--cyan);outline-offset:2px}
  .wrap{max-width:820px;margin:1.25rem auto;padding:0 1rem}
- .card{background:#fff;border-radius:8px;box-shadow:0 1px 3px #0002;padding:1rem 1.25rem;margin-bottom:1rem}
+ .card{background:#111820e8;border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 48px #0005;padding:1rem 1.25rem;margin-bottom:1rem}
  .kv{display:grid;grid-template-columns:9rem 1fr;gap:.25rem .5rem}
  .kv b{font-weight:600}
  table{border-collapse:collapse;width:100%}
- th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #8883}
+ th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid var(--line)}
+ th{color:var(--muted);font-size:.76rem;text-transform:uppercase;letter-spacing:.07em}
  code{font-family:ui-monospace,monospace}
- select,button{font:inherit;padding:.35rem .6rem;border-radius:6px;border:1px solid #8886;background:transparent;color:inherit}
- button{cursor:pointer;background:#b45309;color:#fff;border:none}
+ select,button{font:inherit;padding:.4rem .7rem;border-radius:8px;border:1px solid var(--line);background:#0b0f14;color:inherit}
+ button{cursor:pointer;background:var(--cyan);color:#0b0f14;border:none;font-weight:700}
  button:disabled,select:disabled{opacity:.45;cursor:not-allowed}
- .notice{padding:.65rem .8rem;border-radius:6px;margin-bottom:1rem;background:#dc26261a;color:#b91c1c}
+ .notice{padding:.65rem .8rem;border:1px solid #a22619;border-radius:8px;margin-bottom:1rem;background:#a2261926;color:var(--critical)}
  .notice[hidden]{display:none}
- .pill{border-radius:10px;padding:0 .5rem;font-size:.8rem;background:#8882}
- .direct{background:#16a34a33;color:#166534}
- .exit{background:#b4530933;color:#b45309}
- .route{font-weight:700;padding:.7rem .8rem;border-radius:7px;margin-bottom:.8rem;background:#16a34a1c}
- button.selected{background:#15803d;box-shadow:0 0 0 2px #15803d44}
+ .pill{border:1px solid var(--line);border-radius:999px;padding:.1rem .55rem;font-size:.78rem;background:#27333d}
+ .direct{border-color:#16956c66;background:#16956c26;color:#a8e7c9}
+ .exit{border-color:#20b9e866;background:#20b9e826;color:#a8e7f7}
+ .route{font-weight:700;padding:.75rem .85rem;border:1px solid #20b9e866;border-radius:10px;margin-bottom:.8rem;background:#20b9e815;color:#a8e7f7}
+ button.selected{background:var(--healthy);color:#fff;box-shadow:0 0 0 2px #16956c55}
+ a{color:#66d3f2}
+ @media(max-width:620px){.kv{grid-template-columns:7rem minmax(0,1fr)}table{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}.route+div{flex-wrap:wrap}header{padding:.7rem 1rem}}
 </style></head><body>
-<header><span>🦡 RatelMesh</span><select id="langsel" onchange="setLanguage(this.value)"><option value="system">System</option><option value="zh">简体中文</option><option value="en">English</option></select></header>
+<header><span class="brand"><svg viewBox="0 0 512 512" role="img" aria-label="RatelMesh honey badger Mesh mark"><path fill="#0B0F14" stroke="#42515C" stroke-width="8" d="M81 131C61 113 46 112 34 124 18 140 25 171 54 189l19 167c5 48 32 78 74 101l89 39q20 9 40 0l89-39c42-23 69-53 74-101l19-167c29-18 36-49 20-65-12-12-27-11-47 7l-70-45c-32-21-67-32-105-32s-73 11-105 32z"/><path fill="#F4F7F9" d="M73 145c-12-11-21-13-27-7-8 8-2 24 14 34l17 10 20-29zm366 0c12-11 21-13 27-7 8 8 2 24-14 34l-17 10-20-29zM91 142c45-47 99-70 165-70s120 23 165 70l-37 65c-42-22-85-33-128-33s-86 11-128 33zM128 207l34 30 25 156-58-43-22-92zm256 0-34 30-25 156 58-43 22-92zM231 333l25-20 25 20-9 41 18 25-34 20-34-20 18-25z"/><g fill="none" stroke="#20B9E8" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"><path d="M180 120h152m-172 40h192"/><path d="m180 120-20 40m20-40 76 40m0-40-96 40m96-40 96 40m-20-40-76 40m76-40 20 40"/></g><path fill="#20B9E8" d="m146 276 66 15-32 23-38-12zm220 0-66 15 32 23 38-12z"/><path fill="#0B0F14" d="m232 395 24-9 24 9-10 16-14 6-14-6z"/><g fill="#20B9E8"><circle cx="180" cy="120" r="7"/><circle cx="256" cy="120" r="7"/><circle cx="332" cy="120" r="7"/><circle cx="160" cy="160" r="7"/><circle cx="256" cy="160" r="7"/><circle cx="352" cy="160" r="7"/></g></svg>RatelMesh</span><select id="langsel" onchange="setLanguage(this.value)"><option value="system">System</option><option value="zh">简体中文</option><option value="en">English</option></select></header>
 <div class="wrap">
  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
  <div class="card"><div class="kv" id="summary"></div></div>
@@ -45,7 +51,7 @@ const guiHTML = `<!doctype html>
    <b id="exitlabel"></b>
    <select id="exitsel"></select>
    <button id="btnuse" onclick="useExit()"></button>
-   <button id="btndirect" onclick="clearExit()" style="background:#6b7280"></button>
+   <button id="btndirect" onclick="clearExit()" style="background:#27333d;color:#f4f7f9"></button>
   </div>
   <table id="peers"><thead><tr>
    <th id="h_ip"></th><th id="h_name"></th><th id="h_role"></th><th id="h_path"></th><th id="h_online"></th>
@@ -60,7 +66,7 @@ const guiHTML = `<!doctype html>
    <b id="doctortitle"></b>
    <button id="doctorbutton" onclick="runDoctor()"></button>
   </div>
-  <div style="margin-top:.5rem;color:#6b7280">
+  <div style="margin-top:.5rem;color:#9aabb5">
    <span id="doctorprivacy"></span>
    <a id="doctorprivacylink" href="/privacy" target="_blank" rel="noopener noreferrer"></a>
   </div>

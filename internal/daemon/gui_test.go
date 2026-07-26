@@ -50,6 +50,21 @@ func TestGUIServesControlPanel(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"RatelMesh honey badger Mesh mark",
+		"--cyan:#20b9e8",
+		"background:radial-gradient",
+		"class=\"brand\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GUI page missing unified brand marker %q", want)
+		}
+	}
+	for _, legacy := range []string{"🦡 RatelMesh", "#b45309", "#16a34a", "#15803d"} {
+		if strings.Contains(body, legacy) {
+			t.Errorf("GUI page retained legacy brand token %q", legacy)
+		}
+	}
+	for _, want := range []string{
 		"id=\"doctorprivacy\"",
 		"source or EXIT IP",
 		"源 IP 或 EXIT IP",
@@ -85,6 +100,16 @@ func TestGUIServesControlPanel(t *testing.T) {
 	for _, want := range []string{"Geographic privacy", "地理位置隐私", "stun:stun.ratelmesh.com:3479", "textContent"} {
 		if !strings.Contains(string(privacyBody), want) {
 			t.Errorf("privacy page missing %q", want)
+		}
+	}
+	for _, want := range []string{"--cyan:#20b9e8", "background:radial-gradient", "color:#66d3f2"} {
+		if !strings.Contains(string(privacyBody), want) {
+			t.Errorf("privacy page missing unified brand marker %q", want)
+		}
+	}
+	for _, legacy := range []string{"#b45309", "#f6f7f9", "#131519", "#1d2026"} {
+		if strings.Contains(string(privacyBody), legacy) {
+			t.Errorf("privacy page retained legacy brand token %q", legacy)
 		}
 	}
 	if strings.Contains(string(privacyBody), "innerHTML") {

@@ -2,10 +2,32 @@ import XCTest
 #if SWIFT_PACKAGE
 @testable import RatelMeshShared
 #else
+import UIKit
 @testable import RatelMesh
 #endif
 
 final class MobileConfigurationTests: XCTestCase {
+    func testBrandPresentationUsesAcceptedAssetsWithoutLegacySecurityGlyphs() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/ContentView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(source.localizedCaseInsensitiveContains("shi" + "eld"))
+        XCTAssertTrue(source.contains("colorScheme == .dark ? cyan : accessibleCyan"))
+        XCTAssertTrue(source.contains(#"Image("BrandMarkDark")"#))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: iosRoot.appendingPathComponent(
+                "RatelMesh/Assets.xcassets/BrandMarkDark.imageset/BrandMarkDark-1024.png"
+            ).path
+        ))
+        #if !SWIFT_PACKAGE
+        XCTAssertNotNil(UIImage(named: "BrandMarkDark"))
+        #endif
+    }
+
     func testDecodesVerifiedExitAndItsClients() throws {
         let json = #"{"state":"Running","peers":[],"activeExit":"home-exit","selectedExit":"home-exit","exitTrafficVerified":true,"exitClients":[{"name":"phone","meshIP":"100.64.0.3","state":"active","online":true}]}"#
         let status = try JSONDecoder().decode(MobileStatus.self, from: Data(json.utf8))

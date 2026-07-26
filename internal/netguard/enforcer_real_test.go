@@ -777,9 +777,7 @@ func TestDarwinEnforcerDetectsLegacyCrashMarker(t *testing.T) {
 // SIGKILLed, so its successor starts with weEnabledPf=false and would otherwise
 // leave pf enabled forever on a machine where the user had it disabled.
 func TestDarwinEnforcerClearsPfEnabledMarkerFromCrashedProcess(t *testing.T) {
-	oldMarker := darwinPfEnabledMarkerPath
-	darwinPfEnabledMarkerPath = filepath.Join(t.TempDir(), "ratelmesh-pf-enabled")
-	t.Cleanup(func() { darwinPfEnabledMarkerPath = oldMarker })
+	setDarwinTestPaths(t)
 
 	if pfEnabledByUsPreviously() {
 		t.Fatal("no marker written, but pf reported as previously enabled by us")

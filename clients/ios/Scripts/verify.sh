@@ -30,6 +30,10 @@ xcodebuild -project RatelMesh.xcodeproj \
     OBJROOT="$BUILD_ROOT/obj" \
     build
 
+ASSET_CATALOG="$BUILD_ROOT/Release-iphoneos/RatelMesh.app/Assets.car"
+test -s "$ASSET_CATALOG"
+xcrun assetutil --info "$ASSET_CATALOG" | grep -q '"Name" : "BrandMarkDark"'
+
 for manifest in \
     "$BUILD_ROOT/Release-iphoneos/RatelMesh.app/PrivacyInfo.xcprivacy" \
     "$BUILD_ROOT/Release-iphoneos/RatelMesh.app/PlugIns/PacketTunnel.appex/PrivacyInfo.xcprivacy"; do

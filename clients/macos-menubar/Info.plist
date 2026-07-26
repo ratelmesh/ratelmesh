@@ -24,6 +24,43 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- 64 px raster of the accepted monochrome honey-badger mark. -->
+    <key>RatelMeshMenuTemplatePNG</key>
+    <data>
+    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
+    JlYAAAAASUVORK5CYII=
+    </data>
 	<key>NSLocationUsageDescription</key>
 	<string>RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this Mac.</string>
 </dict>
