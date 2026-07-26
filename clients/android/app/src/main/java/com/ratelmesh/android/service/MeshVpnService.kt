@@ -10,17 +10,19 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-	import android.location.LocationManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.ratelmesh.android.AppLanguagePreferences
 import com.ratelmesh.android.MainActivity
 import com.ratelmesh.android.R
 import com.ratelmesh.android.data.SecureSettings
 import com.ratelmesh.android.data.VpnDisclosureConsent
 import com.ratelmesh.android.model.ConnectionPhase
+import com.ratelmesh.android.model.MeshState
 import com.ratelmesh.android.model.parseStatus
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
@@ -41,6 +43,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -55,6 +59,7 @@ class MeshVpnService : Service() {
     private var appliedConfigJson: String? = null
     @Volatile private var tunnelUp = false
     @Volatile private var backendMutation = false
+    private val systemTeardownScheduled = AtomicBoolean()
 
     private val tunnel = object : Tunnel {
         override fun getName(): String = TUNNEL_NAME
@@ -69,8 +74,15 @@ class MeshVpnService : Service() {
                         error = getString(R.string.error_android_closed_vpn),
                     )
                 }
+                if (systemTeardownScheduled.compareAndSet(false, true)) {
+                    scope.launch { stopAfterSystemTunnelDown() }
+                }
             }
         }
+    }
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLanguagePreferences.localizedContext(newBase))
     }
 
     override fun onCreate() {
@@ -88,6 +100,10 @@ class MeshVpnService : Service() {
             ACTION_STOP -> scope.launch { stopSession() }
             ACTION_USE_EXIT -> scope.launch { selectExit(intent.getStringExtra(EXTRA_EXIT).orEmpty()) }
             ACTION_CLEAR_EXIT -> scope.launch { clearExit() }
+            ACTION_REFRESH_LANGUAGE -> {
+                createNotificationChannel()
+                updateNotification()
+            }
             else -> {
                 startForeground(NOTIFICATION_ID, notification(connecting = true))
                 scope.launch { startSession() }
@@ -104,10 +120,19 @@ class MeshVpnService : Service() {
         val job = pollJob
         pollJob = null
         job?.cancel()
-        runBlocking { job?.join() }
+        runBlocking {
+            withTimeoutOrNull(ON_DESTROY_JOIN_TIMEOUT_MS) { job?.join() }
+        }
         if (::backend.isInitialized) runCatching { setBackendState(Tunnel.State.DOWN, null) }
         runCatching { coreService?.stopApp() }
         releaseCoreService()
+        MeshRuntime.update { current ->
+            withoutLiveSession(
+                current,
+                phase = if (current.phase == ConnectionPhase.ERROR) current.phase else ConnectionPhase.DISCONNECTED,
+                error = if (current.phase == ConnectionPhase.ERROR) current.error else null,
+            )
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -117,6 +142,7 @@ class MeshVpnService : Service() {
         MeshRuntime.update { it.copy(phase = ConnectionPhase.CONNECTING, error = null) }
 
         try {
+            resetIdentityIfPending()
             val settings = SecureSettings(applicationContext).load()
             require(settings.coordinatorUrl.isNotBlank()) { getString(R.string.error_coordinator_required) }
             require(settings.hostname.isNotBlank()) { getString(R.string.error_device_required) }
@@ -140,8 +166,8 @@ class MeshVpnService : Service() {
 			reportAuthorizedSystemLocation(core)
             MeshRuntime.update { it.copy(publicKey = core.publicKey()) }
             pollJob = scope.launch { poll(core) }
-        } catch (error: Throwable) {
-            fail(error)
+        } catch (_: Throwable) {
+            fail()
         }
     }
 
@@ -199,8 +225,8 @@ class MeshVpnService : Service() {
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
-        } catch (error: Throwable) {
-            lifecycleMutex.withLock { fail(error) }
+        } catch (_: Throwable) {
+            lifecycleMutex.withLock { fail() }
         }
     }
 
@@ -218,6 +244,21 @@ class MeshVpnService : Service() {
             )
         }
         core.updatePeerStatsJSON(peers.toString())
+    }
+
+    private fun resetIdentityIfPending() {
+        val settings = SecureSettings(applicationContext)
+        val reset = settings.resetIdentityIfPending {
+            runCatching { setBackendState(Tunnel.State.DOWN, null) }.getOrThrow()
+            val stateDirectory = File(noBackupFilesDir, "mesh-state")
+            check(!stateDirectory.exists() || stateDirectory.deleteRecursively()) {
+                getString(R.string.error_state_directory)
+            }
+        }
+        if (!reset) return
+        MeshRuntime.update { current ->
+            current.copy(enrollmentRequired = false)
+        }
     }
 
     private fun setBackendState(state: Tunnel.State, config: Config?) {
@@ -247,13 +288,32 @@ class MeshVpnService : Service() {
             appliedConfigJson = null
             tunnelUp = false
             MeshRuntime.update {
-                it.copy(
-                    phase = ConnectionPhase.DISCONNECTED,
-                    publicKey = "",
-                    meshIp = "",
-                    activeExit = "",
-                    peers = emptyList(),
-                    error = null,
+                withoutLiveSession(it, phase = ConnectionPhase.DISCONNECTED, error = null)
+            }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private suspend fun stopAfterSystemTunnelDown() {
+        val job = lifecycleMutex.withLock {
+            pollJob.also {
+                pollJob = null
+                it?.cancel()
+            }
+        }
+        job?.join()
+        lifecycleMutex.withLock {
+            runCatching { coreService?.stopApp() }
+            releaseCoreService()
+            appliedVersion = -1
+            appliedConfigJson = null
+            tunnelUp = false
+            MeshRuntime.update {
+                withoutLiveSession(
+                    it,
+                    phase = ConnectionPhase.ERROR,
+                    error = getString(R.string.error_android_closed_vpn),
                 )
             }
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -269,8 +329,8 @@ class MeshVpnService : Service() {
             }.useExit(name)
             check(error.isBlank()) { error }
             MeshRuntime.update { it.copy(error = null) }
-        } catch (error: Throwable) {
-            MeshRuntime.update { it.copy(error = error.message ?: getString(R.string.error_select_exit)) }
+        } catch (_: Throwable) {
+            MeshRuntime.update { it.copy(error = getString(R.string.error_select_exit)) }
         }
     }
 
@@ -281,12 +341,12 @@ class MeshVpnService : Service() {
             }.clearExit()
             check(error.isBlank()) { error }
             MeshRuntime.update { it.copy(error = null) }
-        } catch (error: Throwable) {
-            MeshRuntime.update { it.copy(error = error.message ?: getString(R.string.error_clear_exit)) }
+        } catch (_: Throwable) {
+            MeshRuntime.update { it.copy(error = getString(R.string.error_clear_exit)) }
         }
     }
 
-    private fun fail(error: Throwable) {
+    private fun fail() {
         pollJob?.cancel()
         pollJob = null
         runCatching { setBackendState(Tunnel.State.DOWN, null) }
@@ -296,7 +356,11 @@ class MeshVpnService : Service() {
         appliedConfigJson = null
         tunnelUp = false
         MeshRuntime.update {
-            it.copy(phase = ConnectionPhase.ERROR, error = error.message ?: error.javaClass.simpleName)
+            withoutLiveSession(
+                it,
+                phase = ConnectionPhase.ERROR,
+                error = getString(R.string.error_connection_failed),
+            )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -344,6 +408,24 @@ class MeshVpnService : Service() {
         }
     }
 
+    private fun withoutLiveSession(
+        current: MeshState,
+        phase: ConnectionPhase,
+        error: String?,
+    ): MeshState = current.copy(
+        phase = phase,
+        publicKey = "",
+        meshIp = "",
+        activeExit = "",
+        selectedExit = "",
+        exitTrafficVerified = false,
+        exitClients = emptyList(),
+        peers = emptyList(),
+        error = error,
+        backendState = "",
+        enrollmentRequired = current.enrollmentRequired,
+    )
+
     private fun releaseCoreService() {
         val connection = coreConnection ?: return
         coreConnection = null
@@ -351,11 +433,13 @@ class MeshVpnService : Service() {
         runCatching { unbindService(connection) }
     }
 
-    private fun notification(connecting: Boolean) = NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun notification(connecting: Boolean): android.app.Notification {
+        val localized = AppLanguagePreferences.localizedContext(this)
+        return NotificationCompat.Builder(localized, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle(
-            if (connecting) getString(R.string.vpn_notification_connecting)
-            else getString(R.string.vpn_notification_title),
+            if (connecting) localized.getString(R.string.vpn_notification_connecting)
+            else localized.getString(R.string.vpn_notification_title),
         )
         .setContentIntent(
             PendingIntent.getActivity(
@@ -367,7 +451,7 @@ class MeshVpnService : Service() {
         )
         .addAction(
             0,
-            getString(R.string.vpn_notification_stop),
+            localized.getString(R.string.vpn_notification_stop),
             PendingIntent.getService(
                 this,
                 1,
@@ -379,21 +463,23 @@ class MeshVpnService : Service() {
         .setOnlyAlertOnce(true)
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
         .build()
+    }
 
     private fun updateNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) return
-        NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification(connecting = false))
+        NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification(connecting = !tunnelUp))
     }
 
     private fun createNotificationChannel() {
+        val localized = AppLanguagePreferences.localizedContext(this)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            getString(R.string.vpn_channel_name),
+            localized.getString(R.string.vpn_channel_name),
             NotificationManager.IMPORTANCE_LOW,
-        ).apply { description = getString(R.string.vpn_channel_description) }
+        ).apply { description = localized.getString(R.string.vpn_channel_description) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
@@ -402,11 +488,13 @@ class MeshVpnService : Service() {
         private const val ACTION_STOP = "com.ratelmesh.android.STOP"
         private const val ACTION_USE_EXIT = "com.ratelmesh.android.USE_EXIT"
         private const val ACTION_CLEAR_EXIT = "com.ratelmesh.android.CLEAR_EXIT"
+        private const val ACTION_REFRESH_LANGUAGE = "com.ratelmesh.android.REFRESH_LANGUAGE"
         private const val EXTRA_EXIT = "exit"
         private const val CHANNEL_ID = "mesh-vpn"
         private const val NOTIFICATION_ID = 4401
         private const val TUNNEL_NAME = "ratelmesh"
         private const val POLL_INTERVAL_MS = 1_000L
+        private const val ON_DESTROY_JOIN_TIMEOUT_MS = 1_000L
 
         fun start(context: Context) {
             if (!VpnDisclosureConsent.isAccepted(context)) return
@@ -429,6 +517,13 @@ class MeshVpnService : Service() {
 
         fun clearExit(context: Context) {
             context.startService(Intent(context, MeshVpnService::class.java).setAction(ACTION_CLEAR_EXIT))
+        }
+
+        fun refreshLanguage(context: Context) {
+            if (MeshRuntime.state.value.phase == ConnectionPhase.DISCONNECTED) return
+            context.startService(
+                Intent(context, MeshVpnService::class.java).setAction(ACTION_REFRESH_LANGUAGE),
+            )
         }
     }
 }

@@ -87,6 +87,7 @@ struct MobilePeerConfiguration: Codable, Equatable, Sendable {
 
 struct MobileStatus: Codable, Equatable, Sendable {
     let state: String
+    let enrollmentRequired: Bool?
     let coordURL: String?
     let netmapVersion: UInt64?
     let peers: [MobilePeerStatus]
@@ -127,20 +128,20 @@ struct MobilePeerStatus: Codable, Equatable, Identifiable, Sendable {
     let remoteAccessAllowed: Bool?
     let remoteServices: [MobileRemoteService]?
     var id: String { meshIP.isEmpty ? name : meshIP }
+
+    var authorizedRemoteServices: [MobileRemoteService] {
+        guard remoteAccessAllowed == true, !meshIP.isEmpty else { return [] }
+        return (remoteServices ?? []).filter {
+            ["ssh", "rdp", "vnc"].contains($0.kind) &&
+                $0.port > 0 &&
+                $0.targetMeshIp == meshIP
+        }
+    }
 }
 
-enum MobileConfigurationError: LocalizedError {
+enum MobileConfigurationError: Error {
     case inactive
     case missingInterface
     case invalidCIDR(String)
     case invalidField(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .inactive: "控制核心尚未生成有效隧道配置。"
-        case .missingInterface: "隧道配置缺少私钥或地址。"
-        case .invalidCIDR(let value): "无效路由：\(value)"
-        case .invalidField(let value): "无效隧道字段：\(value)"
-        }
-    }
 }

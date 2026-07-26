@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "한국어", "code": "ko" },
   "status.state": "상태:   {state}",
+  "status.cleanup.pending": "경고: 네트워크 정리가 완료되지 않았습니다. RatelMesh를 재시작하고, 계속되면 `ratelmesh doctor`를 실행하세요.",
   "status.coord": "코디네이터: {coord}",
   "status.self": "내 기기:  {ip}  {name}  ({key})",
   "status.exit.active": "출구:   {name}(모든 트래픽이 이 출구를 경유)",

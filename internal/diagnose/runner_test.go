@@ -206,6 +206,23 @@ func TestUnknownProbeFindingsAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestUnknownProbeIDCannotLeakPrivateText(t *testing.T) {
+	cfg := fixedSaltConfig()
+	cfg.Probes = []ProbeID{"Han-MacBook-Pro/sessionCredentialForHan"}
+	out, err := json.Marshal(New(cfg, permissiveDeps(fixedClock())).Run(context.Background(), Snapshot{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Han-MacBook-Pro", "sessionCredentialForHan"} {
+		if strings.Contains(string(out), forbidden) {
+			t.Fatalf("unknown probe id leaked %q: %s", forbidden, out)
+		}
+	}
+	if !strings.Contains(string(out), "[redacted:probe:") {
+		t.Fatalf("unknown probe id was not replaced by a correlatable token: %s", out)
+	}
+}
+
 func TestMixedKnownAndUnknownProbeIDs(t *testing.T) {
 	// A mix of a known id and an unknown one runs the known probe AND emits a
 	// framework error for the unknown, so a healthy known probe can never mask a

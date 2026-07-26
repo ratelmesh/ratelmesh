@@ -240,17 +240,19 @@ func (r *Redactor) disambiguateKey(out map[string]any, base, orig string) string
 
 // Compiled scrubbing patterns, applied in the fixed order used by scrubPatterns.
 var (
-	rePEM    = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
-	reJWT    = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b`)
-	reBearer = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}`)
-	reURL    = regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"'<>` + "`" + `]+`)
-	reEmail  = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
-	rePath   = regexp.MustCompile(`(?i)(/users/|/home/|[a-z]:\\users\\|\\users\\)([^/\\\s:"']+)`)
-	reWGKey  = regexp.MustCompile(`\b[A-Za-z0-9+/]{43}=`)
-	reB64    = regexp.MustCompile(`\b[A-Za-z0-9+/]{40,}={0,2}`)
-	reHex    = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
-	reMAC    = regexp.MustCompile(`\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b`)
-	reIPv4   = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
+	rePEM                 = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	reJWT                 = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b`)
+	reBearer              = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}`)
+	reURL                 = regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s"'<>` + "`" + `]+`)
+	reEmail               = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
+	rePath                = regexp.MustCompile(`(?i)(/users/|/home/|[a-z]:\\users\\|\\users\\)([^/\\\s:"']+)`)
+	reUnixAbsolutePath    = regexp.MustCompile(`(^|[\s("'=])(/[^\s"'<>` + "`" + `]+)`)
+	reWindowsAbsolutePath = regexp.MustCompile(`(?i)(^|[\s("'=])((?:[a-z]:\\|\\\\)[^\s"'<>` + "`" + `]+)`)
+	reWGKey               = regexp.MustCompile(`\b[A-Za-z0-9+/]{43}=`)
+	reB64                 = regexp.MustCompile(`\b[A-Za-z0-9+/]{40,}={0,2}`)
+	reHex                 = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
+	reMAC                 = regexp.MustCompile(`\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b`)
+	reIPv4                = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
 )
 
 // urlTrailing is the set of punctuation trimmed from a URL match before parsing
@@ -270,6 +272,14 @@ func (r *Redactor) scrubPatterns(s string) string {
 	s = rePath.ReplaceAllStringFunc(s, func(m string) string {
 		sub := rePath.FindStringSubmatch(m)
 		return sub[1] + r.tag("user", sub[2])
+	})
+	s = reUnixAbsolutePath.ReplaceAllStringFunc(s, func(m string) string {
+		sub := reUnixAbsolutePath.FindStringSubmatch(m)
+		return sub[1] + r.tag("path", sub[2])
+	})
+	s = reWindowsAbsolutePath.ReplaceAllStringFunc(s, func(m string) string {
+		sub := reWindowsAbsolutePath.FindStringSubmatch(m)
+		return sub[1] + r.tag("path", sub[2])
 	})
 	s = reWGKey.ReplaceAllStringFunc(s, func(m string) string { return r.tag("key", m) })
 	s = reB64.ReplaceAllStringFunc(s, func(m string) string { return r.tag("key", m) })

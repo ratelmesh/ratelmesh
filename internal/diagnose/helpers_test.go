@@ -336,7 +336,6 @@ type fakeExecutor struct {
 	postFail      PostconditionID   // postcondition that reports unmet (ok=false)
 	postErr       PostconditionID   // postcondition whose check returns an error
 	postBlock     PostconditionID   // postcondition that blocks until ctx is done
-	applyFailCtx  bool              // record the context error state at each Apply
 	sawCancelled  bool
 	sawUncanceled bool
 

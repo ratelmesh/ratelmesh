@@ -5,6 +5,94 @@ set -eu
 ROOT=${RATELMESH_INSTALL_ROOT:-}
 TEST_MODE=${RATELMESH_UNINSTALL_TEST_MODE:-0}
 LABEL=com.ratelmesh.daemon
+STATE="$ROOT/var/lib/ratelmesh"
+ROUTE_COMMAND=${RATELMESH_UNINSTALL_ROUTE_COMMAND:-route}
+PLIST_BUDDY=${RATELMESH_UNINSTALL_PLIST_BUDDY:-/usr/libexec/PlistBuddy}
+
+cleanup_owned_routes() {
+    ledger=$1
+    [ -f "$ledger" ] || return 0
+    converted=$(mktemp "${TMPDIR:-/tmp}/ratelmesh-route-ledger.XXXXXX")
+    if ! plutil -convert xml1 -o "$converted" "$ledger"; then
+        rm -f "$converted"
+        echo "RatelMesh route ownership ledger is unreadable; refusing broad route cleanup." >&2
+        return 1
+    fi
+    version=$("$PLIST_BUDDY" -c "Print :version" "$converted" 2>/dev/null || true)
+    if [ "$version" != 1 ]; then
+        rm -f "$converted"
+        echo "RatelMesh route ownership ledger version is unsupported; refusing broad route cleanup." >&2
+        return 1
+    fi
+    failed=0
+    index=0
+    while prefix=$("$PLIST_BUDDY" -c "Print :routes:$index:prefix" "$converted" 2>/dev/null); do
+        gateway=$("$PLIST_BUDDY" -c "Print :routes:$index:gateway" "$converted" 2>/dev/null || true)
+        device=$("$PLIST_BUDDY" -c "Print :routes:$index:device" "$converted" 2>/dev/null || true)
+        kind=$("$PLIST_BUDDY" -c "Print :routes:$index:kind" "$converted" 2>/dev/null || true)
+        case "$prefix" in
+            ""|-*|*[!0-9A-Fa-f:./]*)
+                echo "Invalid prefix in RatelMesh route ownership ledger." >&2
+                failed=1
+                break
+                ;;
+        esac
+        case "$gateway" in
+            -*|*[!A-Za-z0-9:._%-]*) failed=1; break ;;
+        esac
+        case "$device" in
+            -*|*[!A-Za-z0-9._-]*) failed=1; break ;;
+        esac
+        case "$kind" in
+            0|1|2|3) ;;
+            *) failed=1; break ;;
+        esac
+        family=
+        case "$prefix" in *:*) family=-inet6 ;; esac
+        target=-net
+        destination=$prefix
+        if [ "$kind" = 3 ]; then
+            target=-host
+            destination=${prefix%/*}
+        fi
+        if [ "$kind" = 2 ]; then
+            blackhole=127.0.0.1
+            [ -z "$family" ] || blackhole=::1
+            output=$("$ROUTE_COMMAND" -n delete ${family:+"$family"} "$target" "$destination" "$blackhole" -blackhole 2>&1) ||
+                case "$output" in
+                    *"not in table"*|*"not found"*) ;;
+                    *) failed=1 ;;
+                esac
+        elif [ -n "$gateway" ]; then
+            output=$("$ROUTE_COMMAND" -n delete ${family:+"$family"} "$target" "$destination" "$gateway" 2>&1) ||
+                case "$output" in
+                    *"not in table"*|*"not found"*) ;;
+                    *) failed=1 ;;
+                esac
+        elif [ -n "$device" ]; then
+            output=$("$ROUTE_COMMAND" -n delete ${family:+"$family"} "$target" "$destination" -interface "$device" 2>&1) ||
+                case "$output" in
+                    *"not in table"*|*"not found"*) ;;
+                    *) failed=1 ;;
+                esac
+        else
+            failed=1
+        fi
+        [ "$failed" -eq 0 ] || break
+        index=$((index + 1))
+    done
+    rm -f "$converted"
+    if [ "$failed" -ne 0 ]; then
+        echo "Exact RatelMesh route cleanup failed; installation state was retained for retry." >&2
+        return 1
+    fi
+    rm -f "$ledger"
+}
+
+if [ "${RATELMESH_UNINSTALL_ROUTE_TEST_MODE:-0}" = 1 ]; then
+    cleanup_owned_routes "$STATE/route-owners-v1.json"
+    exit $?
+fi
 
 if [ "$TEST_MODE" != 1 ] && [ "$(id -u)" -ne 0 ]; then
     echo "RatelMesh uninstall requires administrator privileges." >&2
@@ -27,12 +115,6 @@ if [ "$TEST_MODE" != 1 ]; then
     fi
     [ -z "$USER_ID" ] || launchctl bootout "gui/$USER_ID/$LABEL.menubar" 2>/dev/null || true
 
-    NAT_ENABLED=0
-    PLIST="/Library/LaunchDaemons/$LABEL.plist"
-    if [ -f "$PLIST" ] && plutil -p "$PLIST" 2>/dev/null | grep -q '"-enable-nat"'; then
-        NAT_ENABLED=1
-    fi
-
     # SIGTERM gives ratelmeshd time to remove routes, restore DNS and close the utun.
     launchctl bootout "system/$LABEL" 2>/dev/null || true
     i=0
@@ -46,18 +128,35 @@ if [ "$TEST_MODE" != 1 ]; then
     pkill -KILL -f '^/usr/local/ratelmesh/bin/ratelmeshd([[:space:]]|$)' 2>/dev/null || true
     pkill -KILL -f '^/usr/local/ratelmesh/bin/wireguard-go([[:space:]]|$)' 2>/dev/null || true
 
-    # These split-defaults are RatelMesh's full-tunnel routes. Remove them even if
-    # ratelmeshd was wedged and could not execute its normal teardown.
-    route -n delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
-    route -n delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
-    route -n delete -inet6 -net ::/1 >/dev/null 2>&1 || true
-    route -n delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true
+    # A SIGKILL cannot run normal route teardown. Reconcile the daemon's exact,
+    # durable route owners; never delete a prefix without its recorded
+    # gateway/interface because another VPN may own the same /1.
+    cleanup_owned_routes "$STATE/route-owners-v1.json"
 
-    # RatelMesh currently owns a whole pf ruleset, so restore the host rules to remove
-    # either its kill switch or exit-node NAT before deleting the installation.
-    pfctl -f /etc/pf.conf >/dev/null 2>&1 || true
-    if [ "$NAT_ENABLED" = 1 ]; then
-        sysctl -w net.inet.ip.forwarding=0 >/dev/null 2>&1 || true
+    # Reload PF only when a durable RatelMesh firewall marker or the exact
+    # RatelMesh EXIT NAT rule proves that this installation replaced the global
+    # ruleset. Merely having -enable-nat in the plist is permission, not proof
+    # that NAT ever became active.
+    PF_OWNED=0
+    LEGACY_PF_MARKER=/var/run/h"bm"-killswitch.pf.conf
+    for marker in \
+        /var/run/ratelmesh-killswitch.pf.conf \
+        /var/run/ratelmesh-pf-enabled \
+        /var/run/ratelmesh-firewall-emergency \
+        /var/run/ratelmesh-firewall-quarantine \
+        "$LEGACY_PF_MARKER"; do
+        [ ! -e "$marker" ] || PF_OWNED=1
+    done
+    PF_NAT_OWNED=0
+    if pfctl -sn 2>/dev/null | grep -Eq 'nat on .* inet from 100\.64\.0\.0/10 to any'; then
+        PF_NAT_OWNED=1
+    fi
+    if [ "$PF_OWNED" = 1 ] || [ "$PF_NAT_OWNED" = 1 ]; then
+        pfctl -f /etc/pf.conf >/dev/null
+    fi
+    PF_ENABLE_PHASE=$(cat /var/run/ratelmesh-pf-enabled 2>/dev/null || true)
+    if [ -e /var/run/ratelmesh-pf-enabled ] && [ "$PF_ENABLE_PHASE" != cancelled ]; then
+        pfctl -d >/dev/null
     fi
 
     # A SIGKILL can prevent ratelmeshd from restoring DNS. Only reset a service whose
@@ -84,9 +183,14 @@ rm -f "$ROOT/Library/LaunchDaemons/$LABEL.plist"
 rm -f "$ROOT/Library/LaunchAgents/$LABEL.menubar.plist"
 rm -rf "$ROOT/usr/local/ratelmesh"
 rm -rf "$ROOT/Applications/RatelMesh.app"
-rm -rf "$ROOT/var/lib/ratelmesh" "$ROOT/var/db/ratelmesh"
+rm -rf "$STATE" "$ROOT/var/db/ratelmesh"
 rm -f "$ROOT/var/run/ratelmesh.sock" "$ROOT/var/log/ratelmesh.log"
-rm -f "$ROOT/tmp/ratelmesh-killswitch.pf.conf" "$ROOT/tmp/ratelmesh-utun-name"
+rm -f "$ROOT/var/run/ratelmesh-killswitch.pf.conf" \
+    "$ROOT/var/run/ratelmesh-pf-enabled" \
+    "$ROOT/var/run/ratelmesh-firewall-emergency" \
+    "$ROOT/var/run/ratelmesh-firewall-quarantine" \
+    "$ROOT/var/run/h""bm-killswitch.pf.conf" \
+    "$ROOT/tmp/ratelmesh-utun-name"
 
 if [ -n "$USER_HOME" ]; then
     rm -f "$ROOT$USER_HOME/Library/LaunchAgents/$LABEL.menubar.plist"

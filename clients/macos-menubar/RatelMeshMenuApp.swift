@@ -1,6 +1,7 @@
 import AppKit
 import CoreLocation
 import SwiftUI
+import UniformTypeIdentifiers
 
 private final class SystemLocationReporter: NSObject, CLLocationManagerDelegate {
 	private let manager = CLLocationManager()
@@ -72,12 +73,16 @@ private enum Copy {
         let fallback = selected == .chinese || selected == .traditionalChinese || (selected == .system && systemChinese) ? chinese : english
         if selected == .english { return english }
         if selected == .system {
-            return Bundle.main.localizedString(forKey: english, value: fallback, table: nil)
+            let localized = Bundle.main.localizedString(forKey: english, value: english, table: nil)
+            if localized != english { return localized }
+            return Bundle.main.localizedString(forKey: english, value: fallback, table: "NetworkDoctor")
         }
         let tag = selected == .chinese ? "zh-Hans" : selected.rawValue
         guard let path = Bundle.main.path(forResource: tag, ofType: "lproj"),
               let bundle = Bundle(path: path) else { return fallback }
-        return bundle.localizedString(forKey: english, value: fallback, table: nil)
+        let localized = bundle.localizedString(forKey: english, value: english, table: nil)
+        if localized != english { return localized }
+        return bundle.localizedString(forKey: english, value: fallback, table: "NetworkDoctor")
     }
 
     static func format(_ english: String, _ chinese: String, _ arguments: CVarArg...) -> String {
@@ -119,9 +124,22 @@ private enum RatelMeshBrand {
     static let white = Color(red: 244 / 255, green: 247 / 255, blue: 249 / 255)
     static let cyan = Color(red: 32 / 255, green: 185 / 255, blue: 232 / 255)
     static let accessibleCyan = Color(red: 0 / 255, green: 106 / 255, blue: 140 / 255)
+    static let accessibleGreen = Color(red: 0 / 255, green: 106 / 255, blue: 78 / 255)
 
     static func action(for colorScheme: ColorScheme) -> Color {
         colorScheme == .dark ? cyan : accessibleCyan
+    }
+
+    static func critical(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark
+            ? Color(red: 1, green: 180 / 255, blue: 171 / 255)
+            : Color(red: 179 / 255, green: 38 / 255, blue: 30 / 255)
+    }
+
+    static func warning(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark
+            ? Color(red: 1, green: 196 / 255, blue: 107 / 255)
+            : Color(red: 138 / 255, green: 79 / 255, blue: 0)
     }
 }
 
@@ -166,12 +184,12 @@ private final class Store: ObservableObject {
     private let base = URL(string: "http://127.0.0.1:8088")!
     private var refreshTask: Task<Void, Never>?
 	private var locationReporter: SystemLocationReporter?
+    private var requestedLocationForActiveSession = false
 
     init() {
-		locationReporter = SystemLocationReporter { [weak self] coordinate in
-			self?.reportSystemLocation(coordinate)
-		}
-		locationReporter?.start()
+        locationReporter = SystemLocationReporter { [weak self] coordinate in
+            self?.reportSystemLocation(coordinate)
+        }
         Task { await refresh() }
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -199,10 +217,20 @@ private final class Store: ObservableObject {
         do {
             let (data, response) = try await URLSession.shared.data(from: base.appending(path: "/localapi/status"))
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            status = try JSONDecoder().decode(MeshStatus.self, from: data)
+            let decoded = try JSONDecoder().decode(MeshStatus.self, from: data)
+            status = decoded
             reachable = true
+            if decoded.state == "Running" {
+                if !requestedLocationForActiveSession {
+                    requestedLocationForActiveSession = true
+                    locationReporter?.start()
+                }
+            } else {
+                requestedLocationForActiveSession = false
+            }
         } catch {
             reachable = false
+            requestedLocationForActiveSession = false
         }
     }
 
@@ -242,6 +270,148 @@ private final class Store: ObservableObject {
     }
 }
 
+@MainActor
+private protocol NetworkDoctorGateway {
+    func diagnose() async throws -> NetworkDoctorDiagnosis
+    func execute(planID: String, action: String, confirmed: Bool) async throws -> NetworkDoctorExecutionReport
+}
+
+@MainActor
+private final class LocalNetworkDoctorGateway: NetworkDoctorGateway {
+    private let base: URL
+
+    init(base: URL = URL(string: "http://127.0.0.1:8088")!) {
+        self.base = base
+    }
+
+    func diagnose() async throws -> NetworkDoctorDiagnosis {
+        var request = URLRequest(url: base.appending(path: "/localapi/doctor"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "confirm": true,
+            "disclosureVersion": "v1",
+        ])
+        return try await response(NetworkDoctorDiagnosis.self, request: request)
+    }
+
+    func execute(planID: String, action: String, confirmed: Bool) async throws -> NetworkDoctorExecutionReport {
+        guard confirmed else { throw NetworkDoctorContractError.invalidResponse }
+        var request = URLRequest(url: base.appending(path: "/localapi/doctor/repair"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "planID": planID,
+            "action": action,
+            "confirm": true,
+            "disclosureVersion": "v1",
+        ])
+        let envelope = try await response(NetworkDoctorExecutionEnvelope.self, request: request)
+        guard envelope.schema == networkDoctorAPIExecutionSchema else {
+            throw NetworkDoctorContractError.unsupportedSchema
+        }
+        return envelope.execution
+    }
+
+    private func response<T: Decodable>(_ type: T.Type, request: URLRequest) async throws -> T {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let status = (response as? HTTPURLResponse)?.statusCode,
+                  (200..<300).contains(status) else {
+                throw NetworkDoctorContractError.unavailable
+            }
+            guard data.count <= 1_048_576 else { throw NetworkDoctorContractError.responseTooLarge }
+            return try JSONDecoder().decode(type, from: data)
+        } catch let error as NetworkDoctorContractError {
+            throw error
+        } catch is DecodingError {
+            throw NetworkDoctorContractError.invalidResponse
+        } catch {
+            throw NetworkDoctorContractError.unavailable
+        }
+    }
+}
+
+@MainActor
+private final class NetworkDoctorStore: ObservableObject {
+    @Published private(set) var phase: NetworkDoctorPhase = .idle
+    @Published private(set) var diagnosis: NetworkDoctorDiagnosis?
+    @Published private(set) var execution: NetworkDoctorExecutionReport?
+    @Published private(set) var error: NetworkDoctorContractError?
+    private let gateway: NetworkDoctorGateway
+
+    init(gateway: NetworkDoctorGateway = LocalNetworkDoctorGateway()) {
+        self.gateway = gateway
+    }
+
+    var canRepair: Bool {
+        phase == .review && diagnosis?.executableRepairs.isEmpty == false
+    }
+
+    func run() async {
+        guard phase != .running && phase != .executing else { return }
+        phase = .running
+        diagnosis = nil
+        execution = nil
+        error = nil
+        do {
+            let result = try await gateway.diagnose()
+            guard result.schema == networkDoctorAPISchema,
+                  result.report.schema == networkDoctorReportSchema,
+                  result.plan.schema == networkDoctorPlanSchema,
+                  result.plan.dryRun,
+                  result.planID.utf8.count <= 256,
+                  (result.executableRepairs.isEmpty || !result.planID.isEmpty) else {
+                throw NetworkDoctorContractError.unsupportedSchema
+            }
+            diagnosis = result
+            phase = .review
+        } catch {
+            self.error = error as? NetworkDoctorContractError ?? .unavailable
+            phase = .failed
+        }
+    }
+
+    func requestConfirmation() {
+        guard canRepair else {
+            error = .noApplicableRepairs
+            phase = .failed
+            return
+        }
+        phase = .confirming
+    }
+
+    func cancelConfirmation() {
+        guard diagnosis != nil else { return }
+        phase = .review
+    }
+
+    func confirmAndRepair() async {
+        guard phase == .confirming, let diagnosis,
+              let repair = diagnosis.executableRepairs.first else {
+            error = .noApplicableRepairs
+            phase = .failed
+            return
+        }
+        phase = .executing
+        do {
+            let result = try await gateway.execute(
+                planID: diagnosis.planID,
+                action: repair.action,
+                confirmed: true
+            )
+            guard result.schema == networkDoctorExecutionSchema else {
+                throw NetworkDoctorContractError.unsupportedSchema
+            }
+            execution = result
+            phase = .finished
+        } catch {
+            self.error = error as? NetworkDoctorContractError ?? .unavailable
+            phase = .failed
+        }
+    }
+}
+
 private struct Panel: View {
     @ObservedObject var store: Store
     @ObservedObject var updater: UpdateStore
@@ -251,12 +421,21 @@ private struct Panel: View {
     @State private var enrollmentBusy = false
     @State private var enrollmentError = ""
     @State private var language = Copy.language
+    @State private var showingNetworkDoctor = false
+    @StateObject private var networkDoctor = NetworkDoctorStore()
 
     private var exits: [Peer] {
         store.status?.peers.filter { $0.role == "exit" } ?? []
     }
 
     var body: some View {
+        ScrollView { panelContent }
+            .frame(width: 430)
+            .frame(maxHeight: 720)
+    }
+
+    @ViewBuilder
+    private var panelContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 HStack(spacing: 8) {
@@ -276,14 +455,20 @@ private struct Panel: View {
             if shouldShowEnrollment(status: store.status, locallyEnrolled: LocalEnrollment.complete) {
                 enrollmentPrompt
             } else if let status = store.status {
-                let remotePeers = status.peers.filter { $0.remoteAccessAllowed == true && !$0.meshIP.isEmpty }
+                let remotePeers = status.peers.filter { !$0.authorizedRemoteServices.isEmpty }
                 let exitVerificationPending = !status.activeExit.isEmpty && !status.exitTrafficVerified
                 let routePending = store.requestedExit != nil || (!status.selectedExit.isEmpty && status.activeExit.isEmpty) || exitVerificationPending
                 let routeVerified = store.requestedExit == nil && (status.exitTrafficVerified || (status.selectedExit.isEmpty && status.activeExit.isEmpty))
-                let routeColor: Color = routePending ? .orange : (status.activeExit.isEmpty ? RatelMeshBrand.action(for: colorScheme) : .green)
+                let routeColor: Color = routePending
+                    ? RatelMeshBrand.warning(for: colorScheme)
+                    : (status.activeExit.isEmpty ? RatelMeshBrand.action(for: colorScheme) : RatelMeshBrand.accessibleGreen)
                 HStack(spacing: 7) {
                     if routePending { ProgressView().controlSize(.small) }
-                    else { Image(systemName: routeVerified ? "checkmark.seal.fill" : "exclamationmark.triangle.fill").foregroundStyle(routeColor) }
+                    else {
+                        Image(systemName: routeVerified ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(routeColor)
+                            .accessibilityHidden(true)
+                    }
                     Text(routeStatus(status, requested: store.requestedExit))
                         .font(.headline)
                 }
@@ -305,19 +490,9 @@ private struct Panel: View {
                     }
                 }
                 .disabled(exits.isEmpty)
-                HStack {
-                    Button(status.activeExit == picked && status.exitTrafficVerified && !picked.isEmpty && store.requestedExit == nil
-                           ? Copy.text("✓ EXIT verified", "✓ EXIT 已验证")
-                           : Copy.text("Use EXIT", "使用 EXIT")) {
-                        if !picked.isEmpty { store.useExit(picked) }
-                    }
-                    .buttonStyle(RouteButtonStyle(selected: status.activeExit == picked && status.exitTrafficVerified && !picked.isEmpty && store.requestedExit == nil, color: .green))
-                    .disabled(picked.isEmpty || store.requestedExit != nil)
-                    Button(status.activeExit.isEmpty && status.selectedExit.isEmpty && store.requestedExit == nil
-                           ? Copy.text("✓ DIRECT verified", "✓ DIRECT 已验证")
-                           : Copy.text("Use DIRECT", "使用 DIRECT")) { store.clearExit() }
-                        .buttonStyle(RouteButtonStyle(selected: status.activeExit.isEmpty && status.selectedExit.isEmpty && store.requestedExit == nil, color: .blue))
-                        .disabled(store.requestedExit != nil)
+                ViewThatFits(in: .horizontal) {
+                    HStack { routeButtons(status) }
+                    VStack(alignment: .leading, spacing: 6) { routeButtons(status) }
                 }
 
                 if exits.isEmpty {
@@ -338,6 +513,7 @@ private struct Panel: View {
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: exitClientIcon(client.state))
                                     .foregroundStyle(exitClientColor(client.state))
+                                    .accessibilityHidden(true)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("\(client.name)  \(client.meshIP)")
                                         .lineLimit(1)
@@ -356,17 +532,15 @@ private struct Panel: View {
                     Text(Copy.text("Remote access", "远程访问"))
                         .font(.headline)
                     ForEach(remotePeers) { peer in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(peer.name).lineLimit(1)
-                                Text("\(peer.meshIP) · \(peer.platform ?? Copy.text("unknown", "未知平台"))")
-                                    .font(.caption).foregroundStyle(.secondary)
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                remotePeerIdentity(peer)
+                                Spacer()
+                                remoteServiceButtons(peer)
                             }
-                            Spacer()
-                            ForEach(peer.remoteServices ?? []) { service in
-                                Button(remoteServiceLabel(service.kind)) {
-                                    openRemoteAccess(service)
-                                }
+                            VStack(alignment: .leading, spacing: 5) {
+                                remotePeerIdentity(peer)
+                                remoteServiceButtons(peer)
                             }
                         }
                     }
@@ -390,10 +564,10 @@ private struct Panel: View {
                      ? Copy.text("Direct internet is allowed if the exit or RatelMesh data plane fails. Your real IP may be exposed.", "出口或 RatelMesh 数据通道故障时会自动回到本机直连，真实 IP 可能暴露。")
                      : Copy.text("Leak protection stays fail-closed while an exit is selected.", "使用出口时保持故障即断网，防止真实 IP 泄漏。"))
                     .font(.caption)
-                    .foregroundStyle(status.internetFallback == true ? Color.orange : Color.secondary)
+                    .foregroundStyle(status.internetFallback == true ? RatelMeshBrand.warning(for: colorScheme) : Color.secondary)
             } else if LocalEnrollment.complete {
                 Label(Copy.text("Daemon not running", "后台服务未运行"), systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(RatelMeshBrand.warning(for: colorScheme))
                 Text(Copy.text(
                     "This device is registered, but the background service is unavailable.",
                     "这台设备已经注册，但后台服务当前不可用。"
@@ -401,6 +575,17 @@ private struct Panel: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+
+            Divider()
+            Button {
+                showingNetworkDoctor = true
+            } label: {
+                Label(Copy.text("Network Doctor", "一键网络医生"), systemImage: "stethoscope")
+            }
+            .accessibilityHint(Copy.text(
+                "Checks connectivity and creates a redacted support report.",
+                "检查连接并生成脱敏支持报告。"
+            ))
 
             Divider()
             VStack(alignment: .leading, spacing: 7) {
@@ -425,6 +610,7 @@ private struct Panel: View {
                 )
                 HStack {
                     Circle().fill(connectionColor(connection)).frame(width: 9, height: 9)
+                        .accessibilityHidden(true)
                     Text(connectionText(connection))
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -433,18 +619,24 @@ private struct Panel: View {
                         .foregroundStyle(.secondary)
                         .accessibilityLabel(Copy.format("Version %@", "版本 %@", ProductInfo.version))
                 }
-                HStack {
-                    Button(Copy.text("Privacy center…", "隐私中心…")) { LocationPrivacyReminder.openPrivacyCenter() }
-                    Button(Copy.text("Location settings…", "定位设置…")) { LocationPrivacyReminder.openSettings() }
-                    Button(Copy.text("Help", "帮助")) { ProductInfo.openHelp() }
-                    Button(Copy.text("Uninstall…", "卸载…")) { ProductLifecycle.confirmUninstall() }
-                    Spacer()
-                    Button(Copy.text("Quit", "退出")) { NSApplication.shared.terminate(nil) }
+                ViewThatFits(in: .horizontal) {
+                    lifecycleButtons
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Button(Copy.text("Privacy center…", "隐私中心…")) { LocationPrivacyReminder.openPrivacyCenter() }
+                            Button(Copy.text("Location settings…", "定位设置…")) { LocationPrivacyReminder.openSettings() }
+                        }
+                        HStack {
+                            Button(Copy.text("Help", "帮助")) { ProductInfo.openHelp() }
+                            Button(Copy.text("Uninstall…", "卸载…")) { ProductLifecycle.confirmUninstall() }
+                            Spacer()
+                            Button(Copy.text("Quit", "退出")) { NSApplication.shared.terminate(nil) }
+                        }
+                    }
                 }
             }
         }
         .padding(14)
-        .frame(width: 430)
         .tint(RatelMeshBrand.action(for: colorScheme))
         .onAppear {
             if picked.isEmpty { picked = store.status?.activeExit ?? exits.first?.name ?? "" }
@@ -459,19 +651,81 @@ private struct Panel: View {
             Copy.select(selected)
             store.objectWillChange.send()
         }
+        .sheet(isPresented: $showingNetworkDoctor) {
+            NetworkDoctorPanel(store: networkDoctor)
+        }
+    }
+
+    @ViewBuilder
+    private func routeButtons(_ status: MeshStatus) -> some View {
+        Button(status.activeExit == picked && status.exitTrafficVerified && !picked.isEmpty && store.requestedExit == nil
+               ? Copy.text("✓ EXIT verified", "✓ EXIT 已验证")
+               : Copy.text("Use EXIT", "使用 EXIT")) {
+            if !picked.isEmpty { store.useExit(picked) }
+        }
+        .buttonStyle(RouteButtonStyle(
+            selected: status.activeExit == picked && status.exitTrafficVerified && !picked.isEmpty && store.requestedExit == nil,
+            color: RatelMeshBrand.accessibleGreen
+        ))
+        .disabled(picked.isEmpty || store.requestedExit != nil)
+
+        Button(status.activeExit.isEmpty && status.selectedExit.isEmpty && store.requestedExit == nil
+               ? Copy.text("✓ DIRECT verified", "✓ DIRECT 已验证")
+               : Copy.text("Use DIRECT", "使用 DIRECT")) {
+            store.clearExit()
+        }
+        .buttonStyle(RouteButtonStyle(
+            selected: status.activeExit.isEmpty && status.selectedExit.isEmpty && store.requestedExit == nil,
+            color: RatelMeshBrand.accessibleCyan
+        ))
+        .disabled(store.requestedExit != nil)
+    }
+
+    @ViewBuilder
+    private func remotePeerIdentity(_ peer: Peer) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(peer.name).lineLimit(1)
+            Text("\(peer.meshIP) · \(peer.platform ?? Copy.text("unknown", "未知平台"))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func remoteServiceButtons(_ peer: Peer) -> some View {
+        HStack {
+            ForEach(peer.authorizedRemoteServices) { service in
+                Button(remoteServiceLabel(service.kind)) {
+                    openRemoteAccess(service)
+                }
+                .accessibilityLabel(Text(remoteAccessAccessibilityLabel(service, peer: peer)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var lifecycleButtons: some View {
+        HStack {
+            Button(Copy.text("Privacy center…", "隐私中心…")) { LocationPrivacyReminder.openPrivacyCenter() }
+            Button(Copy.text("Location settings…", "定位设置…")) { LocationPrivacyReminder.openSettings() }
+            Button(Copy.text("Help", "帮助")) { ProductInfo.openHelp() }
+            Button(Copy.text("Uninstall…", "卸载…")) { ProductLifecycle.confirmUninstall() }
+            Spacer()
+            Button(Copy.text("Quit", "退出")) { NSApplication.shared.terminate(nil) }
+        }
     }
 
     private func openRemoteAccess(_ service: RemoteService) {
-        let host = service.targetMeshIp.contains(":") ? "[\(service.targetMeshIp)]" : service.targetMeshIp
-        guard ["ssh", "rdp", "vnc"].contains(service.kind),
-              !service.targetMeshIp.isEmpty,
-              service.port > 0,
-              let url = URL(string: "\(service.kind)://\(host):\(service.port)") else { return }
+        guard let url = RemoteAccessURL.make(service) else { return }
         NSWorkspace.shared.open(url)
     }
 
     private func remoteServiceLabel(_ kind: String) -> String {
         kind == "vnc" ? Copy.text("Screen", "屏幕") : kind.uppercased()
+    }
+
+    private func remoteAccessAccessibilityLabel(_ service: RemoteService, peer: Peer) -> String {
+        "\(remoteServiceLabel(service.kind)), \(peer.name.isEmpty ? peer.meshIP : peer.name)"
     }
 
     private func routeStatus(_ status: MeshStatus, requested: String?) -> String {
@@ -503,10 +757,10 @@ private struct Panel: View {
 
     private func connectionColor(_ phase: LocalConnectionPhase) -> Color {
         switch phase {
-        case .disconnected: .red
-        case .enrollment: .blue
-        case .connecting: .orange
-        case .connected: .green
+        case .disconnected: RatelMeshBrand.critical(for: colorScheme)
+        case .enrollment: RatelMeshBrand.action(for: colorScheme)
+        case .connecting: RatelMeshBrand.warning(for: colorScheme)
+        case .connected: RatelMeshBrand.accessibleGreen
         }
     }
 
@@ -528,9 +782,9 @@ private struct Panel: View {
 
     private func exitClientColor(_ state: String) -> Color {
         switch state {
-        case "active": .green
+        case "active": RatelMeshBrand.accessibleGreen
         case "offline": .secondary
-        default: .orange
+        default: RatelMeshBrand.warning(for: colorScheme)
         }
     }
 
@@ -541,15 +795,11 @@ private struct Panel: View {
         enrollmentError = ""
         Task {
             do {
-                _ = try await PrivilegedEnrollment.run(code: code)
+                try await PrivilegedEnrollment.run(code: code)
                 enrollmentCode = ""
                 await store.refresh()
             } catch {
-                enrollmentError = Copy.format(
-                    "Enrollment did not complete: %@",
-                    "注册未完成：%@",
-                    error.localizedDescription
-                )
+                enrollmentError = enrollmentFailureMessage(error)
             }
             enrollmentBusy = false
         }
@@ -571,6 +821,7 @@ private struct Panel: View {
         .foregroundStyle(.secondary)
         SecureField("ratelmesh-xxxx-xxxx-xxxx", text: $enrollmentCode)
             .textFieldStyle(.roundedBorder)
+            .privacySensitive()
             .disabled(enrollmentBusy)
         HStack {
             Button(Copy.text("Open account", "打开账户")) {
@@ -587,8 +838,37 @@ private struct Panel: View {
         if !enrollmentError.isEmpty {
             Text(enrollmentError)
                 .font(.caption)
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
+                .foregroundStyle(RatelMeshBrand.critical(for: colorScheme))
+        }
+    }
+
+    private func enrollmentFailureMessage(_ error: Error) -> String {
+        switch error as? EnrollmentFailure {
+        case .invalidCode:
+            Copy.text(
+                "Enter a valid one-use code in the form ratelmesh-xxxx-xxxx-xxxx.",
+                "请输入格式为 ratelmesh-xxxx-xxxx-xxxx 的有效一次性入网码。"
+            )
+        case .authorization:
+            Copy.text(
+                "Administrator authorization was cancelled. Approve it to finish setup.",
+                "管理员授权已取消。请批准授权以完成设置。"
+            )
+        case .unavailable, .execution, .delivery:
+            Copy.text(
+                "The secure setup helper is unavailable. Reinstall RatelMesh or contact your administrator.",
+                "安全设置助手不可用。请重新安装 RatelMesh 或联系管理员。"
+            )
+        case .rejected:
+            Copy.text(
+                "The one-use code was rejected or expired. Request a new code and try again.",
+                "一次性入网码已被拒绝或过期。请获取新入网码后重试。"
+            )
+        case nil:
+            Copy.text(
+                "Enrollment did not complete. Check your connection and try again.",
+                "注册未完成。请检查网络连接后重试。"
+            )
         }
     }
 
@@ -633,7 +913,7 @@ private struct Panel: View {
                 updater.failureMessage(chinese: false),
                 updater.failureMessage(chinese: true)
             ))
-                .font(.caption).foregroundStyle(.red)
+                .font(.caption).foregroundStyle(RatelMeshBrand.critical(for: colorScheme))
         }
     }
 
@@ -642,7 +922,299 @@ private struct Panel: View {
         case "Running": return Copy.text("Running", "运行中")
         case "Starting": return Copy.text("Starting", "启动中")
         case "Stopped": return Copy.text("Stopped", "已停止")
-        default: return state
+        default: return Copy.text("Unavailable", "不可用")
+        }
+    }
+}
+
+private struct NetworkDoctorPanel: View {
+    @ObservedObject var store: NetworkDoctorStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(Copy.text("Network Doctor", "一键网络医生"), systemImage: "stethoscope")
+                    .font(.title2.bold())
+                Spacer()
+                Button(Copy.text("Close", "关闭")) { dismiss() }
+            }
+
+            HStack(spacing: 9) {
+                if store.phase == .running || store.phase == .executing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: store.phase == .failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(store.phase == .failed ? RatelMeshBrand.critical(for: colorScheme) : RatelMeshBrand.accessibleGreen)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(phaseTitle).font(.headline)
+                    Text(phaseDetail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(phaseTitle). \(phaseDetail)")
+
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if store.phase == .idle {
+                        GroupBox(Copy.text("Ready to diagnose", "准备诊断")) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(Copy.text(
+                                    "Checks connectivity and creates a redacted support report.",
+                                    "检查连接并生成脱敏支持报告。"
+                                ))
+                                Text(Copy.text(
+                                    "Checking Coordinator, Relay, EXIT, WireGuard, MTU, DNS, IP, routes, and video connectivity.",
+                                    "正在检查 Coordinator、Relay、EXIT、WireGuard、MTU、DNS、IP、路由和视频连接。"
+                                ))
+                                .foregroundStyle(.secondary)
+                                Text(Copy.text(
+                                    "Active tests reveal the request time and current source or EXIT address to RatelMesh-operated test services.",
+                                    "主动测试会向 RatelMesh 运营的测试服务显示请求时间以及当前来源地址或 EXIT 地址。"
+                                ))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    if let diagnosis = store.diagnosis {
+                        report(diagnosis.report)
+                        repairs(diagnosis)
+                    }
+                    if let execution = store.execution {
+                        results(execution)
+                    }
+                    if store.phase == .failed {
+                        failure
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Divider()
+            HStack {
+                if store.phase == .idle {
+                    Button(Copy.text("Network Doctor", "一键网络医生")) {
+                        Task { await store.run() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                if store.diagnosis != nil {
+                    Button(Copy.text("Export redacted report…", "导出脱敏报告…")) {
+                        exportReport()
+                    }
+                    .accessibilityHint(Copy.text(
+                        "Exports only the redacted JSON report shown here.",
+                        "仅导出当前显示的脱敏 JSON 报告。"
+                    ))
+                }
+                Spacer()
+                if store.canRepair {
+                    Button(
+                        store.diagnosis?.executableRepairs.first?.title
+                            ?? Copy.text("Ready", "可执行")
+                    ) {
+                        store.requestConfirmation()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                if store.phase == .failed || store.phase == .finished || store.phase == .review {
+                    Button(Copy.text("Run again", "重新诊断")) {
+                        Task { await store.run() }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 560, height: 620)
+        .tint(RatelMeshBrand.action(for: colorScheme))
+        .confirmationDialog(
+            store.diagnosis?.executableRepairs.first?.title
+                ?? Copy.text("Ready", "可执行"),
+            isPresented: Binding(
+                get: { store.phase == .confirming },
+                set: { if !$0 && store.phase == .confirming { store.cancelConfirmation() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(
+                store.diagnosis?.executableRepairs.first?.title
+                    ?? Copy.text("Ready", "可执行")
+            ) {
+                Task { await store.confirmAndRepair() }
+            }
+            Button(Copy.text("Cancel", "取消"), role: .cancel) { store.cancelConfirmation() }
+        } message: {
+            Text(store.diagnosis?.executableRepairs.first?.action ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func report(_ report: NetworkDoctorReport) -> some View {
+        GroupBox(Copy.text("Redacted report preview", "脱敏报告预览")) {
+            VStack(alignment: .leading, spacing: 8) {
+                Grid(alignment: .leading) {
+                    GridRow { Text(Copy.text("Result", "结论")).foregroundStyle(.secondary); Text(report.summary.ok ? Copy.text("No issue found", "未发现问题") : Copy.text("Needs attention", "需要处理")) }
+                    GridRow { Text(Copy.text("Checks", "检查项")).foregroundStyle(.secondary); Text("\(report.probes.count)") }
+                    GridRow { Text(Copy.text("Findings", "发现")).foregroundStyle(.secondary); Text("\(report.summary.totalFindings)") }
+                }
+                ForEach(report.findings) { finding in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(finding.summary).font(.headline)
+                        Text("\(finding.severity.uppercased()) · \(finding.code)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                Text(Copy.text(
+                    "Preview and export use only the redacted Network Doctor report. Passwords, keys, and raw addresses are excluded.",
+                    "预览和导出只使用 Network Doctor 返回的脱敏报告；不包含密码、密钥或原始地址。"
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func repairs(_ diagnosis: NetworkDoctorDiagnosis) -> some View {
+        let executable = Set(diagnosis.availableRepairs)
+        GroupBox(Copy.text("Safe repair plan", "安全修复计划")) {
+            VStack(alignment: .leading, spacing: 8) {
+                if diagnosis.plan.repairs.isEmpty {
+                    Text(Copy.text("No repairs are recommended.", "没有建议的修复。"))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(diagnosis.plan.repairs) { repair in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(repair.title).font(.headline)
+                            Text(repair.action).font(.caption).foregroundStyle(.secondary)
+                            if repair.rollback?.isEmpty == false {
+                                Label(Copy.text("Automatic rollback available", "支持自动回滚"), systemImage: "arrow.uturn.backward.circle")
+                                    .font(.caption)
+                            }
+                        }
+                        Spacer()
+                        Text(repair.applicable && executable.contains(repair.action) ? Copy.text("Ready", "可执行") : Copy.text("Skipped", "已跳过"))
+                            .font(.caption)
+                            .foregroundStyle(repair.applicable && executable.contains(repair.action) ? RatelMeshBrand.accessibleGreen : Color.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func results(_ report: NetworkDoctorExecutionReport) -> some View {
+        GroupBox(Copy.text("Repair and rollback results", "修复结果与回滚状态")) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(report.repairs) { repair in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(resultTitle(repair.status), systemImage: resultIcon(repair.status))
+                            .font(.headline)
+                            .foregroundStyle(repair.needsManualAttention ? RatelMeshBrand.critical(for: colorScheme) : Color.primary)
+                        Text(repair.action).font(.caption).foregroundStyle(.secondary)
+                        if repair.needsManualAttention {
+                            Text(Copy.text(
+                                "The current network state is uncertain. Stop making changes and contact your administrator.",
+                                "当前网络状态无法确认。请停止继续更改，并联系管理员。"
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(RatelMeshBrand.critical(for: colorScheme))
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        }
+    }
+
+    private var failure: some View {
+        GroupBox(Copy.text("Diagnosis unavailable", "诊断不可用")) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(RatelMeshBrand.critical(for: colorScheme))
+                Text(Copy.text(
+                    "No repair was run. Try again, or update to a client and background service that support Network Doctor.",
+                    "没有执行任何修复。你可以重试，或升级到支持 Network Doctor 的客户端与后台服务。"
+                ))
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func exportReport() {
+        guard let report = store.diagnosis?.report,
+              let data = try? report.redactedJSON() else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "ratelmesh-network-doctor-redacted.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private var phaseTitle: String {
+        switch store.phase {
+        case .idle: Copy.text("Ready to diagnose", "准备诊断")
+        case .running: Copy.text("Checking your network", "正在检查网络")
+        case .review, .confirming: Copy.text("Diagnosis complete", "诊断完成")
+        case .executing: Copy.text("Applying safe repairs", "正在安全修复")
+        case .finished: Copy.text("Repair process complete", "修复流程完成")
+        case .failed: Copy.text("Could not complete diagnosis", "无法完成诊断")
+        }
+    }
+
+    private var phaseDetail: String {
+        switch store.phase {
+        case .running: Copy.text("Checking Coordinator, Relay, EXIT, WireGuard, MTU, DNS, IP, routes, and video connectivity.", "正在检查 Coordinator、Relay、EXIT、WireGuard、MTU、DNS、IP、路由和视频连接。")
+        case .executing: Copy.text("Keep RatelMesh open. Each change is verified and rolled back when needed.", "请保持 RatelMesh 打开；每项更改都会验证并在需要时回滚。")
+        case .finished: Copy.text("Review the final status of every repair.", "请查看每项修复的最终状态。")
+        default: Copy.text("Device and network identifiers in the report are redacted.", "报告中的设备和网络标识已脱敏。")
+        }
+    }
+
+    private var errorMessage: String {
+        switch store.error {
+        case .responseTooLarge: Copy.text("The diagnostic response exceeded the safe size limit.", "诊断响应超出安全大小限制。")
+        case .unsupportedSchema: Copy.text("The background service returned an unsupported diagnostic format.", "后台服务返回了不受支持的诊断格式。")
+        case .invalidResponse: Copy.text("The background service returned an invalid diagnostic response.", "后台服务返回了无效的诊断响应。")
+        case .noApplicableRepairs: Copy.text("There are no repairs that can be run safely.", "当前没有可安全执行的修复。")
+        default: Copy.text("This background-service version does not support Network Doctor yet.", "此版本的后台服务暂不支持 Network Doctor。")
+        }
+    }
+
+    private func resultTitle(_ status: String) -> String {
+        switch status {
+        case "applied": Copy.text("Applied and verified", "已修复并验证")
+        case "rolled_back": Copy.text("Repair failed; rolled back", "修复失败，已回滚")
+        case "postcondition_failed": Copy.text("Verification failed; rolled back", "验证失败，已回滚")
+        case "snapshot_failed": Copy.text("Could not save state; unchanged", "无法备份状态，未更改")
+        case "skipped": Copy.text("Safely skipped", "已安全跳过")
+        case "rollback_failed": Copy.text("Rollback failed; manual action required", "回滚失败，需要人工处理")
+        default: Copy.text("State uncertain; manual action required", "状态不确定，需要人工处理")
+        }
+    }
+
+    private func resultIcon(_ status: String) -> String {
+        switch status {
+        case "applied": "checkmark.seal.fill"
+        case "rolled_back", "postcondition_failed": "arrow.uturn.backward.circle.fill"
+        case "snapshot_failed", "skipped": "minus.circle.fill"
+        default: "exclamationmark.octagon.fill"
         }
     }
 }
@@ -659,6 +1231,7 @@ private struct RouteButtonStyle: ButtonStyle {
             .background(selected ? color.opacity(configuration.isPressed ? 0.75 : 1) : Color.clear)
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(color.opacity(selected ? 0 : 0.65)))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -676,19 +1249,33 @@ private enum ProductLifecycle {
         alert.addButton(withTitle: Copy.text("Cancel", "取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        let helper = "/usr/local/ratelmesh/bin/ratelmesh-uninstall"
+        do {
+            try TrustedPrivilegedHelper.validate(helper)
+        } catch {
+            showUninstallFailure()
+            return
+        }
         var error: NSDictionary?
-        let script = NSAppleScript(source: "do shell script \"/usr/local/ratelmesh/bin/ratelmesh-uninstall\" with administrator privileges")
+        let script = NSAppleScript(source: "do shell script \"\(helper)\" with administrator privileges")
         script?.executeAndReturnError(&error)
         if let error {
-            let failure = NSAlert()
-            failure.alertStyle = .critical
-            failure.messageText = Copy.text("Uninstall did not finish", "卸载未完成")
-            failure.informativeText = (error[NSAppleScript.errorMessage] as? String)
-                ?? Copy.text("Administrator authorization was cancelled or the uninstall helper failed.", "管理员授权被取消，或卸载程序执行失败。")
-            failure.runModal()
+            _ = error
+            showUninstallFailure()
             return
         }
         NSApplication.shared.terminate(nil)
+    }
+
+    private static func showUninstallFailure() {
+        let failure = NSAlert()
+        failure.alertStyle = .critical
+        failure.messageText = Copy.text("Uninstall did not finish", "卸载未完成")
+        failure.informativeText = Copy.text(
+            "Administrator authorization was cancelled or the uninstall helper failed.",
+            "管理员授权被取消，或卸载程序执行失败。"
+        )
+        failure.runModal()
     }
 }
 

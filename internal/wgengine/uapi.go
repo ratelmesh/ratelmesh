@@ -108,6 +108,9 @@ func wgConfig(cfg Config, includeAddress bool) string {
 	if cfg.ListenPort != 0 {
 		fmt.Fprintf(&b, "ListenPort = %d\n", cfg.ListenPort)
 	}
+	if includeAddress {
+		fmt.Fprintf(&b, "MTU = %d\n", pathSafeTunnelMTU)
+	}
 	if includeAddress && len(cfg.Addresses) > 0 {
 		addrs := make([]string, len(cfg.Addresses))
 		for i, a := range cfg.Addresses {

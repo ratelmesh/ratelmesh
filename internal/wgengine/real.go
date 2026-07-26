@@ -13,6 +13,7 @@ package wgengine
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -26,8 +27,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/atomicfile"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/atomicfile"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 	"golang.zx2c4.com/wireguard/conn"
 	wgdevice "golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -38,25 +39,40 @@ import (
 // bytes; cross-border access, phone hotspots and relay encapsulation can offer
 // less and silently black-hole full-sized HTTPS/QUIC packets even while small
 // WireGuard packets make the EXIT look healthy.
-const darwinTunnelMTU = 1280
+const darwinTunnelMTU = pathSafeTunnelMTU
 
 type RealEngine struct {
 	log *slog.Logger
 
-	mu             sync.Mutex
-	up             bool
-	iface          string // actual interface name (ratelmesh0 on Linux/Windows, utunN on macOS)
-	cfg            Config
-	confDir        string
-	routed         []netip.Prefix        // Unix routes currently programmed, for teardown
-	pinned         []netip.Addr          // Unix endpoint host-routes pinned to the physical path
-	windowsRoutes  []windowsManagedRoute // Windows routes created by us (not pre-existing routes)
-	windowsPins    []windowsManagedRoute // subset of windowsRoutes that pins physical transports
-	routeAddFunc   func(netip.Prefix, string) error
-	routeDelFunc   func(netip.Prefix) error
-	routeScrubFunc func(string)
-	routesScrubbed bool
-	routesApplied  bool
+	mu                     sync.Mutex
+	up                     bool
+	iface                  string // actual interface name (ratelmesh0 on Linux/Windows, utunN on macOS)
+	cfg                    Config
+	confDir                string
+	routeLedgerPath        string
+	routed                 []netip.Prefix // Unix routes currently programmed, for teardown
+	pinned                 []netip.Addr   // Unix endpoint host-routes pinned to the physical path
+	residualRoutes         []netip.Prefix // failed rollback routes retried without dismantling the active plan
+	routeOwners            map[netip.Prefix]unixManagedRoute
+	pinOwners              map[netip.Addr]unixManagedRoute
+	windowsRoutes          []windowsManagedRoute // Windows routes created by us (not pre-existing routes)
+	windowsPins            []windowsManagedRoute // subset of windowsRoutes that pins physical transports
+	windowsRouteRemoveFunc func(windowsManagedRoute) error
+	interfaceDeleteFunc    func(string) error
+	routeAddFunc           func(netip.Prefix, string) error
+	routeDelFunc           func(netip.Prefix) error
+	routeExistsFunc        func(netip.Prefix) (bool, error)
+	routeScrubFunc         func(string)
+	// physicalDefaultFunc is intentionally distinct from routeDefaultPath:
+	// once the EXIT /1 routes are live, a normal destination lookup resolves
+	// through the tunnel. Endpoint-pin refreshes must instead read the physical
+	// /0 route or they can pin the new coordinator/relay address back to utun.
+	physicalDefaultFunc func(netip.Addr) (netip.Addr, string)
+	routeViaFunc        func(netip.Prefix, netip.Addr, string) error
+	hostRouteDelFunc    func(netip.Addr) error
+	hostRouteExistsFunc func(netip.Addr) (bool, error)
+	routesScrubbed      bool
+	routesApplied       bool
 
 	// windowsApplied records that the tunnel service is installed and e.cfg is
 	// what it runs, enabling the unchanged/syncconf fast paths that avoid a
@@ -179,6 +195,16 @@ func (e *RealEngine) reconfigureDarwinLocked(cfg Config) error {
 	if !e.up || e.iface == "" || e.darwinDevice == nil {
 		return fmt.Errorf("wgengine: macOS interface is not up")
 	}
+	addedPins, err := e.stageEndpointPinsLocked(cfg)
+	if err != nil {
+		return err
+	}
+	keepPins := false
+	defer func() {
+		if !keepPins {
+			e.rollbackStagedPinsLocked(addedPins)
+		}
+	}()
 	uapi := UAPIConfigUpdate(cfg, e.cfg)
 	if len(e.cfg.Peers) == 0 {
 		uapi = UAPIConfig(cfg)
@@ -186,6 +212,10 @@ func (e *RealEngine) reconfigureDarwinLocked(cfg Config) error {
 	if err := e.darwinDevice.IpcSet(uapi); err != nil {
 		return fmt.Errorf("wgengine: in-process UAPI configure: %w", err)
 	}
+	// From this point the new endpoint is live, so its successfully staged pin
+	// must survive any unrelated address/route error and the next call can retry
+	// deterministically without mistaking an old pin for the new endpoint.
+	keepPins = true
 	if err := applyInterfaceAddresses(e.iface, cfg.Addresses); err != nil {
 		return err
 	}
@@ -223,6 +253,16 @@ func (e *RealEngine) reconfigureUnixLocked(cfg Config) error {
 	if !e.up || e.iface == "" {
 		return fmt.Errorf("wgengine: interface is not up")
 	}
+	addedPins, err := e.stageEndpointPinsLocked(cfg)
+	if err != nil {
+		return err
+	}
+	keepPins := false
+	defer func() {
+		if !keepPins {
+			e.rollbackStagedPinsLocked(addedPins)
+		}
+	}()
 	if err := os.MkdirAll(e.confDir, 0o700); err != nil {
 		return err
 	}
@@ -233,6 +273,7 @@ func (e *RealEngine) reconfigureUnixLocked(cfg Config) error {
 	if err := run(e.log, "wg", "setconf", e.iface, confPath); err != nil {
 		return fmt.Errorf("wgengine: wg setconf: %w", err)
 	}
+	keepPins = true
 	if err := applyInterfaceAddresses(e.iface, cfg.Addresses); err != nil {
 		return err
 	}
@@ -293,83 +334,104 @@ func (e *RealEngine) reconfigureWindowsLocked(cfg Config) error {
 			}
 		}
 	}
-	e.windowsApplied = false
-
 	// Tear down the previous service before resolving the physical default
 	// path. Otherwise a previous full-tunnel route can be mistaken for the LAN
 	// route and endpoint/direct-route exceptions will point back into ratelmesh0.
-	e.clearRoutesLocked()
+	if err := e.clearRoutesWithRetriesLocked(2); err != nil {
+		return fmt.Errorf("wgengine: cannot clear previous Windows route plan: %w", err)
+	}
 	// A missing service is expected on the first configuration, so do not emit
 	// an error-level command log for that case.
-	_ = exec.Command(manager, "/uninstalltunnelservice", e.iface).Run()
-	gwAddr, gwDev := routeDefaultPath()
+	if err := deleteInterface(e.log, e.iface); err != nil {
+		return fmt.Errorf("wgengine: remove previous Windows tunnel before reconfigure: %w", err)
+	}
+	e.windowsApplied = false
 
 	plan := planWindowsRoutes(cfg)
-	if plan.hasDefault && (len(plan.pins) > 0 || len(plan.direct) > 0) && !gwAddr.IsValid() && gwDev == "" {
-		return fmt.Errorf("wgengine: cannot resolve the physical Windows path for the exit endpoint / direct routes")
-	}
 	// Pin the exit endpoints to the physical path BEFORE the service installs
 	// the /1 halves, so packets to the exit never route into the tunnel itself
 	// (the Unix path does the same via pinEndpoint).
 	for _, addr := range plan.pins {
 		p := netip.PrefixFrom(addr, addr.BitLen())
-		created, err := windowsCreateRoute(p, gwAddr, gwDev, false)
-		if err != nil {
-			e.clearRoutesLocked()
-			return fmt.Errorf("wgengine: pin Windows exit endpoint %s: %w", addr, err)
+		gwAddr, gwDev := windowsPhysicalDefaultPathFor(addr.Is6())
+		if !gwAddr.IsValid() && gwDev == "" {
+			return errors.Join(
+				fmt.Errorf("wgengine: cannot resolve the physical Windows path for exit endpoint %s", addr),
+				e.clearRoutesWithRetriesLocked(2),
+			)
 		}
-		if created {
-			managed := windowsManagedRoute{
-				prefix: p, interfaceIndex: gwDev, nextHop: windowsRouteNextHop(p, gwAddr),
-			}
-			e.windowsRoutes = append(e.windowsRoutes, managed)
-			e.windowsPins = append(e.windowsPins, managed)
+		managed := windowsManagedRoute{
+			prefix: p, interfaceIndex: gwDev, nextHop: windowsRouteNextHop(p, gwAddr),
+		}
+		if err := e.installWindowsRoute(managed, true, func() (bool, error) {
+			return windowsCreateRoute(p, gwAddr, gwDev, false)
+		}); err != nil {
+			return errors.Join(
+				fmt.Errorf("wgengine: pin Windows exit endpoint %s: %w", addr, err),
+				e.clearRoutesWithRetriesLocked(2),
+			)
 		}
 	}
 
 	if err := atomicfile.WriteFile(confPath, []byte(windowsTunnelConfig(cfg))); err != nil {
-		e.clearRoutesLocked()
-		return fmt.Errorf("wgengine: write Windows tunnel config: %w", err)
+		return errors.Join(
+			fmt.Errorf("wgengine: write Windows tunnel config: %w", err),
+			e.clearRoutesWithRetriesLocked(2),
+		)
 	}
 	if err := secureWindowsConfig(confPath); err != nil {
-		e.clearRoutesLocked()
-		return err
+		return errors.Join(err, e.clearRoutesWithRetriesLocked(2))
 	}
 	if err := run(e.log, manager, "/installtunnelservice", confPath); err != nil {
-		e.clearRoutesLocked()
-		return fmt.Errorf("wgengine: install Windows tunnel service (run ratelmeshd as Administrator): %w", err)
+		return errors.Join(
+			fmt.Errorf("wgengine: install Windows tunnel service (run ratelmeshd as Administrator): %w", err),
+			e.clearRoutesWithRetriesLocked(2),
+		)
 	}
 	if err := waitWindowsTunnel(e.iface, 10*time.Second); err != nil {
-		e.clearRoutesLocked()
+		cleanupErr := e.clearRoutesWithRetriesLocked(2)
 		_ = run(e.log, manager, "/uninstalltunnelservice", e.iface)
-		return err
+		return errors.Join(err, cleanupErr)
 	}
 
 	if plan.hasDefault {
 		for _, p := range plan.direct {
-			created, err := windowsCreateRoute(p, gwAddr, gwDev, false)
-			if err != nil {
-				e.clearRoutesLocked()
+			gwAddr, gwDev := windowsPhysicalDefaultPathFor(p.Addr().Is6())
+			if !gwAddr.IsValid() && gwDev == "" {
+				cleanupErr := e.clearRoutesWithRetriesLocked(2)
 				_ = run(e.log, manager, "/uninstalltunnelservice", e.iface)
-				return fmt.Errorf("wgengine: add Windows direct route %s: %w", p, err)
+				return errors.Join(
+					fmt.Errorf("wgengine: cannot resolve the physical Windows path for direct route %s", p),
+					cleanupErr,
+				)
 			}
-			if created {
-				e.windowsRoutes = append(e.windowsRoutes, windowsManagedRoute{
-					prefix: p, interfaceIndex: gwDev, nextHop: windowsRouteNextHop(p, gwAddr),
-				})
+			managed := windowsManagedRoute{
+				prefix: p, interfaceIndex: gwDev, nextHop: windowsRouteNextHop(p, gwAddr),
+			}
+			if err := e.installWindowsRoute(managed, false, func() (bool, error) {
+				return windowsCreateRoute(p, gwAddr, gwDev, false)
+			}); err != nil {
+				cleanupErr := e.clearRoutesWithRetriesLocked(2)
+				_ = run(e.log, manager, "/uninstalltunnelservice", e.iface)
+				return errors.Join(
+					fmt.Errorf("wgengine: add Windows direct route %s: %w", p, err),
+					cleanupErr,
+				)
 			}
 		}
 		for _, p := range plan.block {
-			created, err := windowsCreateRoute(p, netip.Addr{}, "1", true)
-			if err != nil {
-				e.clearRoutesLocked()
-				_ = run(e.log, manager, "/uninstalltunnelservice", e.iface)
-				return fmt.Errorf("wgengine: add Windows block route %s: %w", p, err)
+			managed := windowsManagedRoute{
+				prefix: p, interfaceIndex: "1", nextHop: windowsRouteNextHop(p, netip.Addr{}),
 			}
-			if created {
-				e.windowsRoutes = append(e.windowsRoutes, windowsManagedRoute{
-					prefix: p, interfaceIndex: "1", nextHop: windowsRouteNextHop(p, netip.Addr{}),
-				})
+			if err := e.installWindowsRoute(managed, false, func() (bool, error) {
+				return windowsCreateRoute(p, netip.Addr{}, "1", true)
+			}); err != nil {
+				cleanupErr := e.clearRoutesWithRetriesLocked(2)
+				_ = run(e.log, manager, "/uninstalltunnelservice", e.iface)
+				return errors.Join(
+					fmt.Errorf("wgengine: add Windows block route %s: %w", p, err),
+					cleanupErr,
+				)
 			}
 		}
 	}
@@ -416,14 +478,13 @@ func (e *RealEngine) stageWindowsPinsLocked(cfg Config) (func(), error) {
 	if !plan.hasDefault {
 		return func() {}, nil
 	}
-	gwAddr, gwDev := windowsPhysicalDefaultPath()
-	if (len(plan.pins) > 0 || len(plan.direct) > 0) && !gwAddr.IsValid() && gwDev == "" {
-		return func() {}, fmt.Errorf("wgengine: cannot resolve the live physical Windows path")
-	}
-
 	desired := make(map[windowsManagedRoute]bool, len(plan.pins))
 	for _, addr := range plan.pins {
 		prefix := netip.PrefixFrom(addr, addr.BitLen())
+		gwAddr, gwDev := windowsPhysicalDefaultPathFor(addr.Is6())
+		if !gwAddr.IsValid() && gwDev == "" {
+			return func() {}, fmt.Errorf("wgengine: cannot resolve the live physical Windows path for %s", addr)
+		}
 		route := windowsManagedRoute{
 			prefix: prefix, interfaceIndex: gwDev, nextHop: windowsRouteNextHop(prefix, gwAddr),
 		}
@@ -431,13 +492,10 @@ func (e *RealEngine) stageWindowsPinsLocked(cfg Config) (func(), error) {
 		if slices.Contains(e.windowsPins, route) {
 			continue
 		}
-		created, err := windowsCreateRoute(prefix, gwAddr, gwDev, false)
-		if err != nil {
+		if err := e.installWindowsRoute(route, true, func() (bool, error) {
+			return windowsCreateRoute(prefix, gwAddr, gwDev, false)
+		}); err != nil {
 			return func() {}, fmt.Errorf("wgengine: stage Windows endpoint pin %s: %w", addr, err)
-		}
-		if created {
-			e.windowsRoutes = append(e.windowsRoutes, route)
-			e.windowsPins = append(e.windowsPins, route)
 		}
 	}
 
@@ -446,7 +504,7 @@ func (e *RealEngine) stageWindowsPinsLocked(cfg Config) (func(), error) {
 			if desired[route] {
 				continue
 			}
-			if err := windowsRemoveExactRoute(route); err != nil {
+			if err := e.removeWindowsRoute(route); err != nil {
 				e.log.Warn("wg: remove obsolete Windows endpoint pin failed", "route", route.prefix, "err", err)
 				continue
 			}
@@ -519,6 +577,7 @@ func (e *RealEngine) applyRoutes(cfg Config) error {
 		}
 		e.routesScrubbed = true
 	}
+	residualErr := e.removeResidualRoutesLocked()
 	// Netmap refreshes and path probes routinely change transport candidates
 	// without changing any tunnel/direct/block route. Removing the live /1
 	// defaults for those updates creates a brief physical-gateway window on
@@ -526,17 +585,28 @@ func (e *RealEngine) applyRoutes(cfg Config) error {
 	// place, but leave the tunnel route plan untouched.
 	if e.routesApplied && unixTunnelRouteInputsEqual(e.cfg, cfg) {
 		e.reconcilePinnedRoutes(cfg)
+		if residualErr != nil {
+			e.log.Warn("wg: deferred route rollback still pending", "err", residualErr)
+		}
 		return nil
 	}
-	e.clearRoutesLocked()
+	if residualErr != nil {
+		return fmt.Errorf("wgengine: clear deferred rollback before changing route plan: %w", residualErr)
+	}
+	if err := e.clearRoutesPreservingPinsLocked(desiredPinnedEndpointSet(cfg)); err != nil {
+		return fmt.Errorf("wgengine: clear previous route plan: %w", err)
+	}
 	failRoute := func(kind string, prefix netip.Prefix, err error) error {
-		e.clearRoutesLocked()
-		return fmt.Errorf("wgengine: install %s route %s: %w", kind, prefix, err)
+		// WireGuard already accepted cfg before route programming. Preserve the
+		// desired endpoint pins so the now-live endpoint remains reachable; mark
+		// routes unapplied and let the next Reconfigure retry deterministically.
+		cleanupErr := e.clearRoutesPreservingPinsLocked(desiredPinnedEndpointSet(cfg))
+		return errors.Join(
+			fmt.Errorf("wgengine: install %s route %s: %w", kind, prefix, err),
+			cleanupErr,
+		)
 	}
 
-	// Capture the pre-hijack default path so split-tunnel "direct" routes and the
-	// exit endpoint can bypass the tunnel.
-	gwAddr, gwDev := routeDefaultPath()
 	hasDefault := false
 	for _, p := range cfg.Peers {
 		if peerHasDefaultRoute(p) {
@@ -549,15 +619,25 @@ func (e *RealEngine) applyRoutes(cfg Config) error {
 	// relay-backed path the WireGuard endpoint is 127.0.0.1, so pinning only the
 	// peer endpoint is insufficient: the bridge's real TCP/WSS connection would
 	// otherwise be captured by the exit it is trying to establish.
-	pinned := make(map[netip.Addr]bool)
+	pinned := make(map[netip.Addr]bool, len(e.pinned))
+	for _, addr := range e.pinned {
+		pinned[addr.Unmap()] = true
+	}
 	pin := func(addr netip.Addr) {
 		addr = addr.Unmap()
 		if !hasDefault || !addr.IsValid() || pinned[addr] {
 			return
 		}
-		if err := pinEndpoint(addr); err == nil {
+		gateway, device := e.physicalDefaultPath(addr)
+		if !gateway.IsValid() && device == "" {
+			return
+		}
+		prefix := netip.PrefixFrom(addr, addr.BitLen())
+		owner := unixManagedRoute{prefix: prefix, gateway: gateway, device: device, kind: unixRoutePin}
+		if err := e.installManagedPin(addr, owner, func() error {
+			return e.routeVia(prefix, gateway, device)
+		}); err == nil {
 			pinned[addr] = true
-			e.pinned = append(e.pinned, addr)
 		}
 	}
 	for _, addr := range cfg.PhysicalEndpoints {
@@ -575,10 +655,10 @@ func (e *RealEngine) applyRoutes(cfg Config) error {
 				}
 				continue // install defaults as /1 pairs below
 			}
-			if err := e.addRoute(a); err != nil {
+			owner := unixManagedRoute{prefix: a, device: e.iface, kind: unixRouteTunnel}
+			if err := e.installManagedRoute(owner, func() error { return e.addRoute(a) }); err != nil {
 				return failRoute("tunnel", a, err)
 			}
-			e.routed = append(e.routed, a)
 		}
 		if hasIPv4Default || hasIPv6Default {
 			// Pin the exit's endpoint to its current physical path first, so
@@ -590,10 +670,10 @@ func (e *RealEngine) applyRoutes(cfg Config) error {
 			}
 			installDefault := func(is6 bool) error {
 				for _, half := range defaultRouteHalves(is6) {
-					if err := e.addRoute(half); err != nil {
+					owner := unixManagedRoute{prefix: half, device: e.iface, kind: unixRouteTunnel}
+					if err := e.installManagedRoute(owner, func() error { return e.addRoute(half) }); err != nil {
 						return failRoute("default", half, err)
 					}
-					e.routed = append(e.routed, half)
 				}
 				return nil
 			}
@@ -614,38 +694,44 @@ func (e *RealEngine) applyRoutes(cfg Config) error {
 				// IPv6 routing is disabled: cleartext IPv6 remains blocked.
 				start := len(e.routed)
 				for _, half := range defaultRouteHalves(true) {
-					if err := e.addRoute(half); err != nil {
+					owner := unixManagedRoute{prefix: half, device: e.iface, kind: unixRouteTunnel}
+					if err := e.installManagedRoute(owner, func() error { return e.addRoute(half) }); err != nil {
 						// Roll back a partially installed IPv6 pair, but retain the
 						// working IPv4 tunnel routes.
-						for _, added := range e.routed[start:] {
-							_ = e.delRoute(added)
+						if cleanupErr := e.removeRoutedFromLocked(start); cleanupErr != nil {
+							e.deferFailedRollbackLocked(start)
+							e.log.Warn("wg: IPv6 partial rollback retained routes for retry", "err", cleanupErr)
 						}
-						e.routed = e.routed[:start]
 						e.log.Warn("wg: IPv6 default route unavailable; continuing with fail-closed IPv4 tunnel", "route", half, "err", err)
 						break
 					}
-					e.routed = append(e.routed, half)
 				}
 			}
 			// Split tunnel: "direct" CIDRs bypass the tunnel via the physical
 			// gateway; "block" CIDRs are blackholed. These are more specific than
 			// the /1 halves, so they win (DESIGN.md §8.4).
-			if gwAddr.IsValid() || gwDev != "" {
-				for _, d := range cfg.DirectRoutes {
-					if err := routeVia(d, gwAddr, gwDev); err != nil {
+			for _, d := range cfg.DirectRoutes {
+				gwAddr, gwDev := e.physicalDefaultPath(d.Addr())
+				if gwAddr.IsValid() || gwDev != "" {
+					owner := unixManagedRoute{prefix: d, gateway: gwAddr, device: gwDev, kind: unixRouteDirect}
+					if err := e.installManagedRoute(owner, func() error {
+						return e.routeVia(d, gwAddr, gwDev)
+					}); err != nil {
 						return failRoute("direct", d, err)
 					}
-					e.routed = append(e.routed, d)
 				}
 			}
 			for _, b := range cfg.BlockRoutes {
-				if err := routeBlackhole(b); err != nil {
+				owner := unixManagedRoute{prefix: b, kind: unixRouteBlackhole}
+				if err := e.installManagedRoute(owner, func() error { return routeBlackhole(b) }); err != nil {
 					return failRoute("blackhole", b, err)
 				}
-				e.routed = append(e.routed, b)
 			}
 		}
 	}
+	// A fail-closed IPv6 partial rollback may leave a harmless tunnel route in
+	// the residual ledger. Keep the working IPv4 plan active; later refreshes
+	// retry only the residual route instead of dismantling the live plan.
 	e.routesApplied = true
 	return nil
 }
@@ -667,14 +753,20 @@ func unixTunnelRouteInputsEqual(prev, next Config) bool {
 }
 
 func desiredPinnedEndpoints(cfg Config) []netip.Addr {
-	hasDefault := false
+	var default4, default6 bool
 	for _, peer := range cfg.Peers {
-		if peerHasDefaultRoute(peer) {
-			hasDefault = true
-			break
+		for _, allowed := range peer.AllowedIPs {
+			if allowed.Bits() != 0 {
+				continue
+			}
+			if allowed.Addr().Is4() {
+				default4 = true
+			} else {
+				default6 = true
+			}
 		}
 	}
-	if !hasDefault {
+	if !default4 && !default6 {
 		return nil
 	}
 	seen := make(map[netip.Addr]bool)
@@ -687,14 +779,25 @@ func desiredPinnedEndpoints(cfg Config) []netip.Addr {
 		}
 	}
 	for _, addr := range cfg.PhysicalEndpoints {
-		add(addr)
+		if addr.Is4() && default4 || addr.Is6() && default6 {
+			add(addr)
+		}
 	}
 	for _, peer := range cfg.Peers {
-		if !peerHasDefaultRoute(peer) || len(peer.Endpoints) == 0 {
+		var peerDefault4, peerDefault6 bool
+		for _, allowed := range peer.AllowedIPs {
+			if allowed.Bits() == 0 {
+				peerDefault4 = peerDefault4 || allowed.Addr().Is4()
+				peerDefault6 = peerDefault6 || allowed.Addr().Is6()
+			}
+		}
+		if !peerDefault4 && !peerDefault6 {
 			continue
 		}
-		if endpoint, err := netip.ParseAddrPort(peer.Endpoints[0]); err == nil {
-			add(endpoint.Addr())
+		if endpoint, err := netip.ParseAddrPort(FirstRenderableEndpoint(peer.Endpoints)); err == nil {
+			if endpoint.Addr().Is4() && peerDefault4 || endpoint.Addr().Is6() && peerDefault6 {
+				add(endpoint.Addr())
+			}
 		}
 	}
 	return desired
@@ -710,18 +813,28 @@ func (e *RealEngine) reconcilePinnedRoutes(cfg Config) {
 		current[addr] = true
 	}
 
-	gwAddr, gwDev := routeDefaultPath()
 	kept := make([]netip.Addr, 0, len(desired))
 	wanted := make(map[netip.Addr]bool, len(desired))
+	refreshComplete := true
 	for _, addr := range desired {
 		wanted[addr] = true
 		if current[addr] {
 			kept = append(kept, addr)
 			continue
 		}
+		gwAddr, gwDev := e.physicalDefaultPath(addr)
+		if !gwAddr.IsValid() && gwDev == "" {
+			e.log.Warn("wg: cannot resolve physical default for endpoint refresh", "endpoint", addr)
+			refreshComplete = false
+			continue
+		}
 		prefix := netip.PrefixFrom(addr, addr.BitLen())
-		if err := routeVia(prefix, gwAddr, gwDev); err != nil {
+		owner := unixManagedRoute{prefix: prefix, gateway: gwAddr, device: gwDev, kind: unixRoutePin}
+		if err := e.installManagedPin(addr, owner, func() error {
+			return e.routeVia(prefix, gwAddr, gwDev)
+		}); err != nil {
 			e.log.Warn("wg: cannot pin refreshed physical endpoint", "endpoint", addr, "err", err)
+			refreshComplete = false
 			continue
 		}
 		kept = append(kept, addr)
@@ -730,32 +843,295 @@ func (e *RealEngine) reconcilePinnedRoutes(cfg Config) {
 	// loses every physical transport route during the refresh.
 	for _, addr := range e.pinned {
 		if !wanted[addr] {
-			_ = hostRouteDel(addr)
+			if refreshComplete {
+				if err := e.delHostRoute(addr); err != nil {
+					e.log.Warn("wg: remove replaced endpoint pin failed", "endpoint", addr, "err", err)
+					kept = append(kept, addr)
+				}
+			} else {
+				// A failed replacement is retried on the next refresh. Keep the
+				// last known recovery path until every new pin is established.
+				kept = append(kept, addr)
+			}
 		}
 	}
 	e.pinned = kept
 }
 
-func (e *RealEngine) clearRoutesLocked() {
-	e.routesApplied = false
-	if runtime.GOOS == "windows" {
-		for _, route := range e.windowsRoutes {
-			_ = windowsRemoveExactRoute(route)
+func (e *RealEngine) physicalDefaultPath(target netip.Addr) (netip.Addr, string) {
+	if e.physicalDefaultFunc != nil {
+		return e.physicalDefaultFunc(target)
+	}
+	return unixPhysicalDefaultPath(target, e.iface)
+}
+
+func (e *RealEngine) routeVia(prefix netip.Prefix, gateway netip.Addr, device string) error {
+	if e.routeViaFunc != nil {
+		return e.routeViaFunc(prefix, gateway, device)
+	}
+	return routeVia(prefix, gateway, device)
+}
+
+func (e *RealEngine) delHostRoute(addr netip.Addr) error {
+	var err error
+	if e.hostRouteDelFunc != nil {
+		err = e.hostRouteDelFunc(addr)
+	} else {
+		owner, ok := e.pinOwners[addr.Unmap()]
+		if !ok {
+			return fmt.Errorf("wgengine: no ownership identity for endpoint pin %s", addr)
 		}
-		e.windowsRoutes = nil
-		e.windowsPins = nil
-		e.routed = nil
-		e.pinned = nil
+		err = deleteUnixManagedRoute(owner)
+	}
+	if err == nil {
+		delete(e.pinOwners, addr.Unmap())
+		return e.persistRouteLedgerLocked()
+	}
+	if routeDeleteNotFound(err) {
+		delete(e.pinOwners, addr.Unmap())
+		return e.persistRouteLedgerLocked()
+	}
+	// Route deletion tools return an error both when the exact host route is
+	// already absent and when a real kernel failure leaves it behind. Query the
+	// exact route before retaining ownership: phantom ledger entries otherwise
+	// block a later pin from being rebuilt after roaming.
+	var (
+		exists    bool
+		verifyErr error
+	)
+	if e.hostRouteExistsFunc != nil {
+		exists, verifyErr = e.hostRouteExistsFunc(addr)
+	} else if e.hostRouteDelFunc != nil {
+		// Test/embedded deletion hooks predate exact-query injection. Preserve
+		// their conservative semantics unless the caller supplies a verifier.
+		exists = true
+	} else {
+		exists, verifyErr = unixManagedRouteExists(e.pinOwners[addr.Unmap()])
+	}
+	if verifyErr != nil {
+		return errors.Join(err, fmt.Errorf("verify host route %s after delete: %w", addr, verifyErr))
+	}
+	if !exists {
+		delete(e.pinOwners, addr.Unmap())
+		return e.persistRouteLedgerLocked()
+	}
+	return err
+}
+
+// stageEndpointPinsLocked is the first phase of an endpoint update. Every new
+// physical transport address is host-routed before WireGuard sees the new UAPI
+// endpoint. If any pin cannot be established, all pins from this attempt are
+// rolled back and the caller leaves the old UAPI configuration committed.
+func (e *RealEngine) stageEndpointPinsLocked(cfg Config) ([]netip.Addr, error) {
+	desired := desiredPinnedEndpoints(cfg)
+	current := make(map[netip.Addr]bool, len(e.pinned))
+	for _, addr := range e.pinned {
+		current[addr.Unmap()] = true
+	}
+	var added []netip.Addr
+	for _, addr := range desired {
+		addr = addr.Unmap()
+		if current[addr] {
+			continue
+		}
+		gateway, device := e.physicalDefaultPath(addr)
+		if !gateway.IsValid() && device == "" {
+			e.rollbackStagedPinsLocked(added)
+			return nil, fmt.Errorf("wgengine: cannot resolve physical path for endpoint %s", addr)
+		}
+		prefix := netip.PrefixFrom(addr, addr.BitLen())
+		owner := unixManagedRoute{prefix: prefix, gateway: gateway, device: device, kind: unixRoutePin}
+		if err := e.installManagedPin(addr, owner, func() error {
+			return e.routeVia(prefix, gateway, device)
+		}); err != nil {
+			e.rollbackStagedPinsLocked(added)
+			return nil, fmt.Errorf("wgengine: pin endpoint %s before configuration switch: %w", addr, err)
+		}
+		current[addr] = true
+		added = append(added, addr)
+	}
+	return added, nil
+}
+
+func (e *RealEngine) rollbackStagedPinsLocked(added []netip.Addr) {
+	if len(added) == 0 {
 		return
 	}
-	for _, r := range e.routed {
-		_ = e.delRoute(r) // matches tunnel, direct-via-gw and blackhole routes
+	remove := make(map[netip.Addr]bool, len(added))
+	for _, addr := range added {
+		if err := e.delHostRoute(addr); err != nil {
+			// The route still exists in the kernel. Retain it in the ownership
+			// ledger so shutdown or a later reconcile retries cleanup.
+			e.log.Warn("wg: rollback staged endpoint pin failed", "endpoint", addr, "err", err)
+			continue
+		}
+		remove[addr] = true
 	}
-	for _, a := range e.pinned {
-		_ = hostRouteDel(a)
+	kept := e.pinned[:0]
+	for _, addr := range e.pinned {
+		if !remove[addr] {
+			kept = append(kept, addr)
+		}
 	}
+	e.pinned = kept
+}
+
+func desiredPinnedEndpointSet(cfg Config) map[netip.Addr]bool {
+	desired := desiredPinnedEndpoints(cfg)
+	set := make(map[netip.Addr]bool, len(desired))
+	for _, addr := range desired {
+		set[addr.Unmap()] = true
+	}
+	return set
+}
+
+func (e *RealEngine) removeRoutedFromLocked(start int) error {
+	if start < 0 || start > len(e.routed) {
+		return fmt.Errorf("wgengine: invalid route cleanup boundary %d of %d", start, len(e.routed))
+	}
+	kept := append([]netip.Prefix(nil), e.routed[:start]...)
+	var errs []error
+	for _, route := range e.routed[start:] {
+		if err := e.delRoute(route); err != nil {
+			e.log.Warn("wg: remove managed route failed", "route", route, "err", err)
+			kept = append(kept, route)
+			errs = append(errs, fmt.Errorf("remove managed route %s: %w", route, err))
+		}
+	}
+	e.routed = kept
+	return errors.Join(errs...)
+}
+
+func (e *RealEngine) installManagedRoute(owner unixManagedRoute, install func() error) error {
+	if e.routeOwners == nil {
+		e.routeOwners = make(map[netip.Prefix]unixManagedRoute)
+	}
+	e.routeOwners[owner.prefix] = owner
+	if err := e.persistRouteLedgerLocked(); err != nil {
+		delete(e.routeOwners, owner.prefix)
+		return fmt.Errorf("wgengine: persist route cleanup intent for %s: %w", owner.prefix, err)
+	}
+	if err := install(); err != nil {
+		delete(e.routeOwners, owner.prefix)
+		return errors.Join(err, e.persistRouteLedgerLocked())
+	}
+	if !slices.Contains(e.routed, owner.prefix) {
+		e.routed = append(e.routed, owner.prefix)
+	}
+	return nil
+}
+
+func (e *RealEngine) installManagedPin(addr netip.Addr, owner unixManagedRoute, install func() error) error {
+	addr = addr.Unmap()
+	if e.pinOwners == nil {
+		e.pinOwners = make(map[netip.Addr]unixManagedRoute)
+	}
+	e.pinOwners[addr] = owner
+	if err := e.persistRouteLedgerLocked(); err != nil {
+		delete(e.pinOwners, addr)
+		return fmt.Errorf("wgengine: persist endpoint cleanup intent for %s: %w", addr, err)
+	}
+	if err := install(); err != nil {
+		delete(e.pinOwners, addr)
+		return errors.Join(err, e.persistRouteLedgerLocked())
+	}
+	if !slices.Contains(e.pinned, addr) {
+		e.pinned = append(e.pinned, addr)
+	}
+	return nil
+}
+
+func (e *RealEngine) deferFailedRollbackLocked(start int) {
+	if start < 0 || start > len(e.routed) {
+		return
+	}
+	for _, prefix := range e.routed[start:] {
+		if !slices.Contains(e.residualRoutes, prefix) {
+			e.residualRoutes = append(e.residualRoutes, prefix)
+		}
+	}
+	e.routed = e.routed[:start]
+}
+
+func (e *RealEngine) removeResidualRoutesLocked() error {
+	kept := e.residualRoutes[:0]
+	var errs []error
+	for _, prefix := range e.residualRoutes {
+		if err := e.delRoute(prefix); err != nil {
+			kept = append(kept, prefix)
+			errs = append(errs, fmt.Errorf("remove deferred route %s: %w", prefix, err))
+		}
+	}
+	e.residualRoutes = kept
+	return errors.Join(errs...)
+}
+
+func (e *RealEngine) clearRoutesPreservingPinsLocked(preserve map[netip.Addr]bool) error {
+	e.routesApplied = false
+	var errs []error
+	if err := e.removeRoutedFromLocked(0); err != nil {
+		errs = append(errs, err)
+	}
+	if err := e.removeResidualRoutesLocked(); err != nil {
+		errs = append(errs, err)
+	}
+	kept := e.pinned[:0]
+	for _, addr := range e.pinned {
+		if preserve[addr.Unmap()] {
+			kept = append(kept, addr)
+		} else {
+			if err := e.delHostRoute(addr); err != nil {
+				e.log.Warn("wg: remove obsolete endpoint pin failed", "endpoint", addr, "err", err)
+				kept = append(kept, addr)
+				errs = append(errs, fmt.Errorf("remove endpoint pin %s: %w", addr, err))
+			}
+		}
+	}
+	e.pinned = kept
+	return errors.Join(errs...)
+}
+
+func (e *RealEngine) clearRoutesLocked() error {
+	e.routesApplied = false
+	if runtime.GOOS == "windows" {
+		return e.clearWindowsRoutesLocked()
+	}
+	var errs []error
+	if err := e.removeRoutedFromLocked(0); err != nil {
+		errs = append(errs, err)
+	}
+	if err := e.removeResidualRoutesLocked(); err != nil {
+		errs = append(errs, err)
+	}
+	keptPins := e.pinned[:0]
+	for _, addr := range e.pinned {
+		if err := e.delHostRoute(addr); err != nil {
+			e.log.Warn("wg: remove endpoint pin failed", "endpoint", addr, "err", err)
+			keptPins = append(keptPins, addr)
+			errs = append(errs, fmt.Errorf("remove endpoint pin %s: %w", addr, err))
+		}
+	}
+	e.pinned = keptPins
+	return errors.Join(errs...)
+}
+
+func (e *RealEngine) clearWindowsRoutesLocked() error {
+	var errs []error
+	keptRoutes := e.windowsRoutes[:0]
+	for _, route := range e.windowsRoutes {
+		if err := e.removeWindowsRoute(route); err != nil {
+			e.log.Warn("wg: remove managed Windows route failed", "route", route.prefix, "err", err)
+			keptRoutes = append(keptRoutes, route)
+			errs = append(errs, fmt.Errorf("remove managed Windows route %s: %w", route.prefix, err))
+		}
+	}
+	e.windowsRoutes = keptRoutes
+	e.windowsPins = slices.DeleteFunc(e.windowsPins, func(pin windowsManagedRoute) bool {
+		return !slices.Contains(e.windowsRoutes, pin)
+	})
 	e.routed = nil
 	e.pinned = nil
+	return errors.Join(errors.Join(errs...), e.persistRouteLedgerLocked())
 }
 
 func (e *RealEngine) addRoute(prefix netip.Prefix) error {
@@ -766,10 +1142,90 @@ func (e *RealEngine) addRoute(prefix netip.Prefix) error {
 }
 
 func (e *RealEngine) delRoute(prefix netip.Prefix) error {
+	var err error
 	if e.routeDelFunc != nil {
-		return e.routeDelFunc(prefix)
+		err = e.routeDelFunc(prefix)
+	} else {
+		owner, ok := e.routeOwners[prefix]
+		if !ok {
+			return fmt.Errorf("wgengine: no ownership identity for managed route %s", prefix)
+		}
+		err = deleteUnixManagedRoute(owner)
 	}
-	return routeDelAny(prefix)
+	if err == nil {
+		delete(e.routeOwners, prefix)
+		return e.persistRouteLedgerLocked()
+	}
+	if routeDeleteNotFound(err) {
+		delete(e.routeOwners, prefix)
+		return e.persistRouteLedgerLocked()
+	}
+	var (
+		exists    bool
+		verifyErr error
+	)
+	if e.routeExistsFunc != nil {
+		exists, verifyErr = e.routeExistsFunc(prefix)
+	} else if e.routeDelFunc != nil {
+		exists = true
+	} else {
+		exists, verifyErr = unixManagedRouteExists(e.routeOwners[prefix])
+	}
+	if verifyErr != nil {
+		return errors.Join(err, fmt.Errorf("verify route %s after delete: %w", prefix, verifyErr))
+	}
+	if !exists {
+		delete(e.routeOwners, prefix)
+		return e.persistRouteLedgerLocked()
+	}
+	return err
+}
+
+func (e *RealEngine) removeWindowsRoute(route windowsManagedRoute) error {
+	if e.windowsRouteRemoveFunc != nil {
+		return e.windowsRouteRemoveFunc(route)
+	}
+	return windowsRemoveExactRoute(route)
+}
+
+func (e *RealEngine) installWindowsRoute(route windowsManagedRoute, pin bool, install func() (bool, error)) error {
+	e.windowsRoutes = append(e.windowsRoutes, route)
+	if pin {
+		e.windowsPins = append(e.windowsPins, route)
+	}
+	if err := e.persistRouteLedgerLocked(); err != nil {
+		e.windowsRoutes = e.windowsRoutes[:len(e.windowsRoutes)-1]
+		if pin {
+			e.windowsPins = e.windowsPins[:len(e.windowsPins)-1]
+		}
+		return fmt.Errorf("wgengine: persist Windows route cleanup intent for %s: %w", route.prefix, err)
+	}
+	created, err := install()
+	if err == nil && !created {
+		err = fmt.Errorf("wgengine: route %s conflicts with a pre-existing route", route.prefix)
+	}
+	if err != nil {
+		e.windowsRoutes = e.windowsRoutes[:len(e.windowsRoutes)-1]
+		if pin {
+			e.windowsPins = e.windowsPins[:len(e.windowsPins)-1]
+		}
+		return errors.Join(err, e.persistRouteLedgerLocked())
+	}
+	return nil
+}
+
+func (e *RealEngine) clearRoutesWithRetriesLocked(attempts int) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for range attempts {
+		err = e.clearRoutesLocked()
+		if err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 func (e *RealEngine) Peers() []types.Key {
@@ -785,22 +1241,34 @@ func (e *RealEngine) Peers() []types.Key {
 func (e *RealEngine) Down() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	cleanupErr := e.clearRoutesWithRetriesLocked(3)
 	if !e.up {
-		return nil
+		return cleanupErr
 	}
-	e.clearRoutesLocked()
+	var interfaceErr error
 	if runtime.GOOS == "darwin" && e.darwinDevice != nil {
 		e.stopDarwinDeviceLocked()
 	} else {
 		e.stopDarwinProcessLocked()
-		deleteInterface(e.log, e.iface)
+		if e.interfaceDeleteFunc != nil {
+			interfaceErr = e.interfaceDeleteFunc(e.iface)
+		} else {
+			interfaceErr = deleteInterface(e.log, e.iface)
+		}
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && interfaceErr == nil {
 		_ = os.Remove(filepath.Join(e.confDir, WindowsTunnelName+".conf"))
 		e.windowsApplied = false
 	}
-	e.up = false
+	if interfaceErr == nil {
+		e.up = false
+	}
 	e.log.Info("wg: interface down", "iface", e.iface)
+	if cleanupErr != nil || interfaceErr != nil {
+		err := errors.Join(cleanupErr, interfaceErr)
+		e.log.Error("wg: interface down incomplete", "err", err)
+		return fmt.Errorf("wgengine: incomplete data-plane teardown: %w", err)
+	}
 	return nil
 }
 
@@ -840,7 +1308,9 @@ func (e *RealEngine) recoverDataPlane(force bool) error {
 	oldIface := e.iface
 	legacyExternal := e.darwinDevice == nil && e.darwinProcess != nil
 	e.log.Warn("wg: rebuilding macOS data plane", "iface", oldIface, "networkPathReset", force)
-	e.clearRoutesLocked()
+	if err := e.clearRoutesWithRetriesLocked(2); err != nil {
+		return fmt.Errorf("wgengine: recover data plane: clear old route plan: %w", err)
+	}
 	if e.darwinDevice != nil {
 		e.stopDarwinDeviceLocked()
 	} else {

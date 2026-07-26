@@ -14,7 +14,7 @@ final class RatelMeshMobileClient: @unchecked Sendable {
             configuration.hostname,
             &error
         ) else {
-            throw error ?? RatelMeshMobileError.creationFailed
+            throw RatelMeshMobileError.creationFailed
         }
         self.app = app
     }
@@ -31,23 +31,64 @@ final class RatelMeshMobileClient: @unchecked Sendable {
     }
 
     func useExit(_ name: String) throws {
-        if name.isEmpty { try app.clearExit() }
-        else { try app.useExit(name) }
+        do {
+            if name.isEmpty { try app.clearExit() }
+            else { try app.useExit(name) }
+        } catch {
+            throw RatelMeshMobileError.exitSelectionFailed
+        }
     }
 
-	func setSystemLocation(latitude: Double, longitude: Double) throws {
-		try app.setSystemLocation(latitude, longitude: longitude)
-	}
+    var doctorDisclosureVersion: String { app.doctorDisclosureVersion() }
+
+    func runNetworkDoctor(_ disclosureVersion: String, confirmed: Bool) throws -> String {
+        var error: NSError?
+        let result = app.runNetworkDoctor(
+            disclosureVersion,
+            confirmed: confirmed,
+            error: &error
+        )
+        guard error == nil else {
+            throw RatelMeshMobileError.doctorUnavailable
+        }
+        return result
+    }
+
+    func applyNetworkDoctorRepair(
+        _ planID: String,
+        action: String,
+        disclosureVersion: String,
+        confirmed: Bool
+    ) throws -> String {
+        var error: NSError?
+        let result = app.applyNetworkDoctorRepair(
+            planID,
+            action: action,
+            disclosureVersion: disclosureVersion,
+            confirmed: confirmed,
+            error: &error
+        )
+        guard error == nil else {
+            throw RatelMeshMobileError.doctorUnavailable
+        }
+        return result
+    }
+
+    func setSystemLocation(latitude: Double, longitude: Double) throws {
+        try app.setSystemLocation(latitude, longitude: longitude)
+    }
 }
 
-enum RatelMeshMobileError: LocalizedError {
+enum RatelMeshMobileError: Error, TunnelErrorCodeProviding {
     case creationFailed
     case exitSelectionFailed
+    case doctorUnavailable
 
-    var errorDescription: String? {
+    var tunnelErrorCode: TunnelErrorCode {
         switch self {
-        case .creationFailed: "无法启动 RatelMesh 控制核心。"
-        case .exitSelectionFailed: "无法切换出口节点。"
+        case .creationFailed: .controlCoreStartFailed
+        case .exitSelectionFailed: .exitSelectionFailed
+        case .doctorUnavailable: .unknownProviderError
         }
     }
 }

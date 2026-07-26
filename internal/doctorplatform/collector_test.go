@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
 )
 
 type fakeRunner struct {
@@ -247,6 +247,7 @@ func TestCaptureNilContextFailsClosedWithoutExecuting(t *testing.T) {
 		Coordinator: diagnose.Endpoint{Host: "keep.example"},
 		WireGuard:   diagnose.WireGuardState{Interface: "wg0", LinkMTU: 1280},
 	}
+	//lint:ignore SA1012 This test deliberately verifies the fail-closed nil-context boundary.
 	got, errs := collector.Capture(nil, Inputs{Snapshot: base})
 	if executed {
 		t.Fatal("nil context executed an observation")

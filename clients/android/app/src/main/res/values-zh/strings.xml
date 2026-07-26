@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">接受并继续</string>
     <string name="vpn_disclosure_decline">暂不</string>
     <string name="error_android_closed_vpn">Android 已关闭 VPN 隧道</string>
+    <string name="error_connection_failed">无法连接。请检查网络和设置后重试。</string>
     <string name="error_coordinator_required">请输入协调器地址</string>
     <string name="error_device_required">请输入设备名称</string>
     <string name="error_state_directory">无法创建受保护的状态目录</string>

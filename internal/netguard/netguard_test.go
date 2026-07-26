@@ -37,7 +37,6 @@ func TestRenderPFFailsClosed(t *testing.T) {
 	for _, want := range []string{
 		"block out all",   // default deny
 		"set skip on lo0", // local API bypasses PF state tracking
-		"pass out to 100.64.0.0/10 no state",
 		"pass out proto udp to 203.0.113.7 port 51820 no state", // tunnel endpoint reachable
 	} {
 		if !strings.Contains(out, want) {
@@ -59,12 +58,31 @@ func TestRenderNFTFailsClosed(t *testing.T) {
 	for _, want := range []string{
 		"policy drop;",
 		"oif \"lo\" accept",
-		"ip daddr 100.64.0.0/10 accept",
 		"udp dport 51820 accept",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("nft output missing %q\n%s", want, out)
 		}
+	}
+}
+
+func TestKillSwitchNeverAllowsMeshRangeOnPhysicalInterface(t *testing.T) {
+	p := Policy{
+		Enabled:         true,
+		TunnelInterface: "ratelmesh0",
+		AllowCIDRs:      DefaultAllowCIDRs(),
+	}
+	pf := mustPF(t, p)
+	if strings.Contains(pf, "pass out to 100.64.0.0/10") {
+		t.Fatalf("PF lets mesh traffic escape independently of the tunnel interface:\n%s", pf)
+	}
+	nft := mustNFT(t, p)
+	if strings.Contains(nft, "ip daddr 100.64.0.0/10 accept") {
+		t.Fatalf("nftables lets mesh traffic escape independently of the tunnel interface:\n%s", nft)
+	}
+	if !strings.Contains(pf, "pass out on ratelmesh0 all") ||
+		!strings.Contains(nft, `oif "ratelmesh0" accept`) {
+		t.Fatal("mesh traffic must remain permitted on the tunnel interface")
 	}
 }
 

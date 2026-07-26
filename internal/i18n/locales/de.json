@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "Deutsch", "code": "de" },
   "status.state": "Status:  {state}",
+  "status.cleanup.pending": "Warnung: Die Netzwerkbereinigung ist unvollständig. Starten Sie RatelMesh neu; falls dies bestehen bleibt, führen Sie `ratelmesh doctor` aus.",
   "status.coord": "Koord.:  {coord}",
   "status.self": "Lokal:   {ip}  {name}  ({key})",
   "status.exit.active": "Ausgang: {name} (gesamter Datenverkehr über diesen Ausgang geroutet)",

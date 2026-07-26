@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">同意して続行</string>
     <string name="vpn_disclosure_decline">今はしない</string>
     <string name="error_android_closed_vpn">AndroidがVPNトンネルを終了しました</string>
+    <string name="error_connection_failed">接続できません。ネットワークと設定を確認して、もう一度お試しください。</string>
     <string name="error_coordinator_required">コーディネータURLが必要です</string>
     <string name="error_device_required">端末名が必要です</string>
     <string name="error_state_directory">保護された状態ディレクトリを作成できませんでした</string>

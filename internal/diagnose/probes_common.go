@@ -20,6 +20,27 @@ var (
 	errNoHTTP   = errors.New("diagnose: no HTTP client configured")
 )
 
+// safeErrorClass converts an implementation error into a small stable category
+// suitable for a shareable support report. Dependency errors may contain
+// device names, filesystem paths, addresses or credentials; their raw text is
+// therefore never report evidence.
+func safeErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	return "failed"
+}
+
 // mediaReadLimit bounds how many bytes the media probe pulls per sample so a
 // "sustained reachability" check streams a real chunk without unbounded reads.
 const mediaReadLimit = 64 << 10
@@ -247,23 +268,6 @@ const (
 	// default space (a genuine leak).
 	coveragePhysicalEscape
 )
-
-// canonical default-scope prefixes per family. The /1 halves are matched by
-// exact prefix (not by count) so duplicate halves cannot satisfy coverage.
-var (
-	v4LowHalf  = netip.MustParsePrefix("0.0.0.0/1")
-	v4HighHalf = netip.MustParsePrefix("128.0.0.0/1")
-	v6LowHalf  = netip.MustParsePrefix("::/1")
-	v6HighHalf = netip.MustParsePrefix("8000::/1")
-)
-
-// halfPrefixes returns the two /1 halves that split the default route for fam.
-func halfPrefixes(fam AddressFamily) (low, high netip.Prefix) {
-	if fam == FamilyV6 {
-		return v6LowHalf, v6HighHalf
-	}
-	return v4LowHalf, v4HighHalf
-}
 
 // defaultPrefix returns the full default prefix (/0) for fam.
 func defaultPrefix(fam AddressFamily) netip.Prefix {

@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/shan25519/ratelmesh/internal/pqcrypto"
+	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
 )
 
 const wssCamoName = "wss"

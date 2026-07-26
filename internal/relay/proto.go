@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // FrameType identifies a relay frame.
@@ -68,12 +68,28 @@ func writeFrame(w io.Writer, t FrameType, payload []byte) error {
 	var hdr [5]byte
 	binary.BigEndian.PutUint32(hdr[:4], uint32(n))
 	hdr[4] = byte(t)
-	if _, err := w.Write(hdr[:]); err != nil {
+	if err := writeAll(w, hdr[:]); err != nil {
 		return err
 	}
 	if len(payload) > 0 {
-		if _, err := w.Write(payload); err != nil {
+		if err := writeAll(w, payload); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func writeAll(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if n > 0 {
+			data = data[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrNoProgress
 		}
 	}
 	return nil

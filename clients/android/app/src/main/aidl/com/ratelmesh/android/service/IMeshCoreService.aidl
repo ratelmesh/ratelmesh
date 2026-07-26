@@ -18,4 +18,7 @@ interface IMeshCoreService {
     String useExit(String name);
     String clearExit();
 	String setSystemLocation(double latitude, double longitude);
+    String doctorDisclosureVersion();
+    String runNetworkDoctor(String disclosureVersion, boolean confirmed);
+    String applyNetworkDoctorRepair(String planID, String action, String disclosureVersion, boolean confirmed);
 }

@@ -84,3 +84,9 @@
 "RatelMesh v%@ was downloaded and verified. Open the system installer now?" = "O RatelMesh v%@ foi baixado e verificado. Abrir o instalador do sistema agora?";
 "Install now" = "Instalar agora";
 "Later" = "Mais tarde";
+"Enter a valid one-use code in the form ratelmesh-xxxx-xxxx-xxxx." = "Insira um código de uso único válido no formato ratelmesh-xxxx-xxxx-xxxx.";
+"Administrator authorization was cancelled. Approve it to finish setup." = "A autorização de administrador foi cancelada. Aprove-a para concluir a configuração.";
+"The secure setup helper is unavailable. Reinstall RatelMesh or contact your administrator." = "O assistente de configuração segura não está disponível. Reinstale o RatelMesh ou fale com o administrador.";
+"The one-use code was rejected or expired. Request a new code and try again." = "O código de uso único foi rejeitado ou expirou. Solicite um novo código e tente novamente.";
+"Enrollment did not complete. Check your connection and try again." = "O cadastro não foi concluído. Verifique a conexão e tente novamente.";
+"Unavailable" = "Indisponível";

@@ -1,0 +1,16 @@
+<resources>
+    <string name="doctor_progress_accessibility">第 %1$d 步，共 %2$d 步</string>
+    <string name="doctor_check_preparing">正在准备检查…</string>
+    <string name="doctor_check_coordinator">正在检查 Coordinator…</string>
+    <string name="doctor_check_relay">正在检查 Relay…</string>
+    <string name="doctor_check_exit">正在检查 EXIT…</string>
+    <string name="doctor_check_wireguard">正在检查 WireGuard…</string>
+    <string name="doctor_check_mtu">正在检查路径 MTU…</string>
+    <string name="doctor_check_dns">正在检查 DNS…</string>
+    <string name="doctor_check_ip_routes">正在检查 IPv4、IPv6 和路由…</string>
+    <string name="doctor_check_media">正在检查持续视频连接…</string>
+    <string name="doctor_severity_ok">正常</string>
+    <string name="doctor_severity_info">信息</string>
+    <string name="doctor_severity_warning">警告</string>
+    <string name="doctor_severity_critical">严重</string>
+</resources>

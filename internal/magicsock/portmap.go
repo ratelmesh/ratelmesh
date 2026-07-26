@@ -56,7 +56,7 @@ func MapUDPPort(ctx context.Context, internalPort uint16) (PortMapping, error) {
 			return mapped, nil
 		}
 	}
-	if mapped, err := mapUPnP(ctx, local, internalPort, portMapLifetime); err == nil {
+	if mapped, err := mapUPnP(ctx, gateway, local, internalPort, portMapLifetime); err == nil {
 		return mapped, nil
 	}
 	return PortMapping{}, errors.New("magicsock: gateway supports none of PCP, NAT-PMP, or UPnP IGD UDP mapping")

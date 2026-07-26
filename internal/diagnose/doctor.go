@@ -199,7 +199,7 @@ func (d *Doctor) runProbes(ctx context.Context, env *Env) []ProbeResult {
 	// planning/execution may need the actual platform identifiers and never
 	// serializes the Snapshot directly.
 	probeEnv := *env
-	probeEnv.Snapshot = env.Snapshot.tokenizedInterfaces(env.Redactor)
+	probeEnv.Snapshot = env.Snapshot.tokenizedReportIdentifiers(env.Redactor)
 	env = &probeEnv
 
 	selected, unknown := d.selectedProbes()
@@ -260,10 +260,11 @@ func (d *Doctor) unknownProbeResults(unknown []ProbeID, env *Env) []ProbeResult 
 	now := env.Clock.Now()
 	results := make([]ProbeResult, 0, len(unknown))
 	for _, id := range unknown {
-		res := ProbeResult{Probe: id, Status: StatusError, StartedAt: now}
-		res.add(newFinding(id, CodeProbeError,
-			fmt.Sprintf("probe %s was not run: unknown probe id requested in Config.Probes", id),
-			map[string]string{"probe": string(id)}))
+		reportID := shareableProbeID(id, env.Redactor)
+		res := ProbeResult{Probe: reportID, Status: StatusError, StartedAt: now}
+		res.add(newFinding(reportID, CodeProbeError,
+			fmt.Sprintf("probe %s was not run: unknown probe id requested in Config.Probes", reportID),
+			map[string]string{"probe": string(reportID)}))
 		results = append(results, res)
 	}
 	return results
@@ -372,7 +373,7 @@ const defaultMaxLiveProbeGoroutines = 64
 // never drive the goroutine count without bound.
 func (d *Doctor) runOne(parent context.Context, p Probe, env *Env) ProbeResult {
 	clock := env.Clock
-	id := p.ID()
+	id := shareableProbeID(p.ID(), env.Redactor)
 	start := clock.Now()
 
 	stamp := func(res ProbeResult) ProbeResult {
@@ -417,10 +418,10 @@ func (d *Doctor) runOne(parent context.Context, p Probe, env *Env) ProbeResult {
 	go func() {
 		defer sem.release()
 		defer func() {
-			if rec := recover(); rec != nil {
+			if recover() != nil {
 				pr := ProbeResult{Probe: id, Status: StatusPanic}
 				pr.add(newFinding(id, CodeProbePanic,
-					fmt.Sprintf("probe %s panicked: %v", id, rec),
+					fmt.Sprintf("probe %s panicked; payload withheld", id),
 					map[string]string{"probe": string(id)}))
 				done <- pr
 			}

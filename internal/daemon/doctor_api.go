@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,22 +17,115 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/diagnose"
-	"github.com/shan25519/ratelmesh/internal/doctorplatform"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/doctorplatform"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
-type doctorResponse struct {
-	Report            diagnose.Report                   `json:"report"`
-	Plan              diagnose.RepairPlan               `json:"plan"`
-	AvailableRepairs  []diagnose.RepairActionID         `json:"availableRepairs,omitempty"`
-	ObservationErrors []doctorplatform.ObservationError `json:"observationErrors,omitempty"`
+type NetworkDoctorResult struct {
+	Schema            string                          `json:"schema"`
+	Report            diagnose.Report                 `json:"report"`
+	Plan              diagnose.RepairPlan             `json:"plan"`
+	AvailableRepairs  []diagnose.RepairActionID       `json:"availableRepairs,omitempty"`
+	ObservationErrors []NetworkDoctorObservationError `json:"observationErrors,omitempty"`
+	PlanID            string                          `json:"planID,omitempty"`
+	PlanExpiresAt     string                          `json:"planExpiresAt,omitempty"`
 }
 
-const doctorDisclosureVersion = "v1"
+// NetworkDoctorObservationError is the stable, identifier-only wire shape.
+// Keeping it separate from doctorplatform prevents Go field names or future
+// collector details from silently changing the native-client JSON contract.
+type NetworkDoctorObservationError struct {
+	Observation string `json:"observation"`
+	Kind        string `json:"kind"`
+}
+
+type NetworkDoctorExecution struct {
+	Schema    string                   `json:"schema"`
+	Execution diagnose.ExecutionReport `json:"execution"`
+}
+
+const (
+	doctorDisclosureVersion = "v1"
+	doctorAPISchema         = "ratelmesh.doctor.api/v1"
+	doctorExecutionSchema   = "ratelmesh.doctor.execution/v1"
+	doctorPlanTTL           = 5 * time.Minute
+	maxDoctorJSONBytes      = 1 << 20
+	doctorTokenBytes        = 32
+)
+
+var (
+	ErrDoctorInvalidRequest      = errors.New("doctor.invalid_request")
+	ErrDoctorDisclosureRequired  = errors.New("doctor.disclosure_required")
+	ErrDoctorBusy                = errors.New("doctor.busy")
+	ErrDoctorRepairUnsupported   = errors.New("doctor.repair_unsupported")
+	ErrDoctorPlanRequired        = errors.New("doctor.plan_required")
+	ErrDoctorPlanExpired         = errors.New("doctor.plan_expired")
+	ErrDoctorPlanMismatch        = errors.New("doctor.plan_mismatch")
+	ErrDoctorRepairNotApplicable = errors.New("doctor.repair_not_applicable")
+	ErrDoctorResponseTooLarge    = errors.New("doctor.response_too_large")
+	ErrDoctorUnavailable         = errors.New("doctor.unavailable")
+)
+
+// DoctorDisclosureVersion is the consent text version native clients must show
+// before an active diagnostic or repair request.
+func DoctorDisclosureVersion() string { return doctorDisclosureVersion }
+
+type doctorPlanAuthorization struct {
+	digest    [sha256.Size]byte
+	actions   map[diagnose.RepairActionID]struct{}
+	expiresAt time.Time
+	runCtx    context.Context
+}
+
+// NetworkDoctor is the bounded daemon/mobile API state machine. One instance is
+// shared per Daemon so local HTTP and native mobile callers cannot run probes or
+// privileged repairs concurrently.
+type NetworkDoctor struct {
+	d      *Daemon
+	run    chan struct{}
+	mu     sync.Mutex
+	plan   doctorPlanAuthorization
+	now    func() time.Time
+	random io.Reader
+}
+
+func newNetworkDoctor(d *Daemon) *NetworkDoctor {
+	return &NetworkDoctor{
+		d: d, run: make(chan struct{}, 1),
+		now: time.Now, random: rand.Reader,
+	}
+}
+
+func (d *Daemon) networkDoctor() *NetworkDoctor {
+	if d == nil {
+		return nil
+	}
+	d.doctorOnce.Do(func() { d.doctor = newNetworkDoctor(d) })
+	return d.doctor
+}
+
+// NetworkDoctor returns the shared diagnosis/repair state machine for trusted
+// in-process clients such as the gomobile binding.
+func (d *Daemon) NetworkDoctor() *NetworkDoctor { return d.networkDoctor() }
+
+func (n *NetworkDoctor) acquire() bool {
+	if n == nil {
+		return false
+	}
+	select {
+	case n.run <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (n *NetworkDoctor) release() { <-n.run }
 
 type doctorRunRequest struct {
 	Confirm           bool   `json:"confirm"`
@@ -37,6 +134,7 @@ type doctorRunRequest struct {
 
 type doctorRepairRequest struct {
 	Action            diagnose.RepairActionID `json:"action"`
+	PlanID            string                  `json:"planID"`
 	Confirm           bool                    `json:"confirm"`
 	DisclosureVersion string                  `json:"disclosureVersion"`
 }
@@ -59,101 +157,114 @@ func defaultDoctorMediaTargets() []diagnose.Endpoint {
 func (a *LocalAPI) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	var input doctorRunRequest
 	if err := decodeStrictJSON(r.Body, 4<<10, &input); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		writeDoctorError(w, ErrDoctorInvalidRequest)
 		return
 	}
 	if !input.Confirm || input.DisclosureVersion != doctorDisclosureVersion {
-		http.Error(w, "current diagnostic disclosure confirmation required", http.StatusPreconditionRequired)
+		writeDoctorError(w, ErrDoctorDisclosureRequired)
 		return
 	}
-	if !a.acquireDoctorRun() {
-		http.Error(w, "diagnosis already running", http.StatusTooManyRequests)
+	if a.d == nil {
+		writeDoctorError(w, ErrDoctorInvalidRequest)
 		return
 	}
-	defer a.releaseDoctorRun()
-	response := a.runDoctor(r.Context())
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(response)
+	response, err := a.d.networkDoctor().Run(r.Context(), input.Confirm, input.DisclosureVersion)
+	if err != nil {
+		writeDoctorError(w, err)
+		return
+	}
+	writeDoctorJSON(w, response)
 }
 
 func (a *LocalAPI) handleDoctorRepair(w http.ResponseWriter, r *http.Request) {
 	var input doctorRepairRequest
 	if err := decodeStrictJSON(r.Body, 4<<10, &input); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		writeDoctorError(w, ErrDoctorInvalidRequest)
 		return
 	}
 	if !input.Confirm || input.DisclosureVersion != doctorDisclosureVersion {
-		http.Error(w, "current diagnostic disclosure confirmation required", http.StatusPreconditionRequired)
+		writeDoctorError(w, ErrDoctorDisclosureRequired)
+		return
+	}
+	if !validDoctorRepairAction(input.Action) {
+		writeDoctorError(w, ErrDoctorInvalidRequest)
 		return
 	}
 	if !supportedDoctorRepair(input.Action) {
-		http.Error(w, "repair is not safely available on this build", http.StatusNotImplemented)
+		writeDoctorError(w, ErrDoctorRepairUnsupported)
 		return
 	}
-	if !a.acquireDoctorRun() {
-		http.Error(w, "diagnosis or repair already running", http.StatusTooManyRequests)
+	if a.d == nil {
+		writeDoctorError(w, ErrDoctorInvalidRequest)
 		return
 	}
-	defer a.releaseDoctorRun()
-
-	// Repairs are serialized because they touch shared routing/firewall state.
-	// The plan and execution snapshot are both recaptured after the lock.
-	a.doctorRepairMu.Lock()
-	defer a.doctorRepairMu.Unlock()
-
-	planned := a.runDoctor(r.Context())
-	var selected *diagnose.PlannedRepair
-	for i := range planned.Plan.Repairs {
-		if planned.Plan.Repairs[i].Action == input.Action {
-			selected = &planned.Plan.Repairs[i]
-			break
-		}
-	}
-	if selected == nil || !selected.Applicable {
-		http.Error(w, "repair is not currently applicable", http.StatusConflict)
+	report, err := a.d.networkDoctor().Repair(
+		r.Context(), input.PlanID, input.Action, input.Confirm, input.DisclosureVersion,
+	)
+	if err != nil {
+		writeDoctorError(w, err)
 		return
 	}
-	planned.Plan.Repairs = []diagnose.PlannedRepair{*selected}
-
-	fresh, _ := a.captureDoctorSnapshot(r.Context())
-	exec := &daemonDoctorExecutor{d: a.d}
-	report := a.newDoctor(fresh).ExecutePlan(r.Context(), fresh, planned.Plan, exec)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(report)
+	writeDoctorJSON(w, report)
 }
 
-func (a *LocalAPI) acquireDoctorRun() bool {
-	a.doctorRunOnce.Do(func() { a.doctorRun = make(chan struct{}, 1) })
-	select {
-	case a.doctorRun <- struct{}{}:
-		return true
-	default:
-		return false
+func (n *NetworkDoctor) Run(ctx context.Context, confirmed bool, disclosure string) (NetworkDoctorResult, error) {
+	if ctx == nil || n == nil || n.d == nil {
+		return NetworkDoctorResult{}, ErrDoctorInvalidRequest
 	}
-}
+	if !confirmed || disclosure != doctorDisclosureVersion {
+		return NetworkDoctorResult{}, ErrDoctorDisclosureRequired
+	}
+	if !n.acquire() {
+		return NetworkDoctorResult{}, ErrDoctorBusy
+	}
+	defer n.release()
+	// Starting a newer diagnosis invalidates every prior authorization before
+	// any active probe runs. A failed/canceled run must never leave an older
+	// plan executable.
+	n.clearPlan()
 
-func (a *LocalAPI) releaseDoctorRun() {
-	<-a.doctorRun
-}
-
-func (a *LocalAPI) runDoctor(ctx context.Context) doctorResponse {
-	snapshot, observationErrors := a.captureDoctorSnapshot(ctx)
-	report, plan := a.newDoctor(snapshot).Diagnose(ctx, snapshot)
+	snapshot, observationErrors := n.captureSnapshot(ctx)
+	report, plan := n.newDoctor(snapshot).Diagnose(ctx, snapshot)
 	var available []diagnose.RepairActionID
 	for _, repair := range plan.Repairs {
-		if repair.Applicable && supportedDoctorRepair(repair.Action) {
+		if repair.Applicable && n.canExecuteRepair(repair.Action) {
 			available = append(available, repair.Action)
 		}
 	}
-	return doctorResponse{
+	result := NetworkDoctorResult{
+		Schema: doctorAPISchema,
 		Report: report, Plan: plan, AvailableRepairs: available,
-		ObservationErrors: observationErrors,
+		ObservationErrors: doctorObservationErrorsForWire(observationErrors),
 	}
+	if len(available) > 0 {
+		token, expiresAt, err := n.issuePlan(available)
+		if err != nil {
+			return NetworkDoctorResult{}, ErrDoctorUnavailable
+		}
+		result.PlanID = token
+		result.PlanExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+	} else {
+		n.clearPlan()
+	}
+	return result, nil
 }
 
-func (a *LocalAPI) newDoctor(snapshot diagnose.Snapshot) *diagnose.Doctor {
+func doctorObservationErrorsForWire(in []doctorplatform.ObservationError) []NetworkDoctorObservationError {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]NetworkDoctorObservationError, 0, len(in))
+	for _, item := range in {
+		out = append(out, NetworkDoctorObservationError{
+			Observation: string(item.Observation),
+			Kind:        string(item.Kind),
+		})
+	}
+	return out
+}
+
+func (n *NetworkDoctor) newDoctor(snapshot diagnose.Snapshot) *diagnose.Doctor {
 	cfg := diagnose.DefaultConfig()
 	if snapshot.WireGuard.LinkMTU >= cfg.MTU.SearchLow && snapshot.WireGuard.LinkMTU < cfg.MTU.SearchHigh {
 		cfg.MTU.SearchHigh = snapshot.WireGuard.LinkMTU
@@ -163,9 +274,232 @@ func (a *LocalAPI) newDoctor(snapshot diagnose.Snapshot) *diagnose.Doctor {
 	return diagnose.New(cfg, deps)
 }
 
-func (a *LocalAPI) captureDoctorSnapshot(ctx context.Context) (diagnose.Snapshot, []doctorplatform.ObservationError) {
-	snapshot := a.d.doctorBaseSnapshot()
+func (n *NetworkDoctor) captureSnapshot(ctx context.Context) (diagnose.Snapshot, []doctorplatform.ObservationError) {
+	snapshot := n.d.doctorBaseSnapshot()
 	return doctorplatform.New().Capture(ctx, doctorplatform.Inputs{Snapshot: snapshot})
+}
+
+func (n *NetworkDoctor) issuePlan(actions []diagnose.RepairActionID) (string, time.Time, error) {
+	raw := make([]byte, doctorTokenBytes)
+	if n.random == nil {
+		return "", time.Time{}, ErrDoctorInvalidRequest
+	}
+	if _, err := io.ReadFull(n.random, raw); err != nil {
+		return "", time.Time{}, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	digest := sha256.Sum256(raw)
+	for i := range raw {
+		raw[i] = 0
+	}
+	now := time.Now()
+	if n.now != nil {
+		now = n.now()
+	}
+	expiresAt := now.Add(doctorPlanTTL)
+	allowed := make(map[diagnose.RepairActionID]struct{}, len(actions))
+	for _, action := range actions {
+		if supportedDoctorRepair(action) {
+			allowed[action] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return "", time.Time{}, ErrDoctorRepairNotApplicable
+	}
+	var runCtx context.Context
+	if n.d != nil {
+		n.d.mu.Lock()
+		runCtx = n.d.runCtx
+		n.d.mu.Unlock()
+	}
+	n.mu.Lock()
+	n.plan = doctorPlanAuthorization{
+		digest: digest, actions: allowed, expiresAt: expiresAt, runCtx: runCtx,
+	}
+	n.mu.Unlock()
+	return token, expiresAt, nil
+}
+
+func (n *NetworkDoctor) clearPlan() {
+	n.mu.Lock()
+	n.plan = doctorPlanAuthorization{}
+	n.mu.Unlock()
+}
+
+func parseDoctorPlanID(token string) ([sha256.Size]byte, bool) {
+	if len(token) == 0 || len(token) > 128 {
+		return [sha256.Size]byte{}, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != doctorTokenBytes ||
+		base64.RawURLEncoding.EncodeToString(raw) != token {
+		return [sha256.Size]byte{}, false
+	}
+	digest := sha256.Sum256(raw)
+	for i := range raw {
+		raw[i] = 0
+	}
+	return digest, true
+}
+
+func (n *NetworkDoctor) consumePlan(token string, action diagnose.RepairActionID) error {
+	if token == "" {
+		return ErrDoctorPlanRequired
+	}
+	digest, ok := parseDoctorPlanID(token)
+	if !ok {
+		return ErrDoctorPlanMismatch
+	}
+	now := time.Now()
+	if n.now != nil {
+		now = n.now()
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	plan := n.plan
+	if plan.actions == nil {
+		return ErrDoctorPlanRequired
+	}
+	if !now.Before(plan.expiresAt) {
+		n.plan = doctorPlanAuthorization{}
+		return ErrDoctorPlanExpired
+	}
+	if plan.runCtx != nil && plan.runCtx.Err() != nil {
+		n.plan = doctorPlanAuthorization{}
+		return ErrDoctorPlanExpired
+	}
+	if subtle.ConstantTimeCompare(digest[:], plan.digest[:]) != 1 {
+		return ErrDoctorPlanMismatch
+	}
+	if _, ok := plan.actions[action]; !ok {
+		return ErrDoctorPlanMismatch
+	}
+	n.plan = doctorPlanAuthorization{}
+	return nil
+}
+
+func (n *NetworkDoctor) Repair(
+	ctx context.Context,
+	planID string,
+	action diagnose.RepairActionID,
+	confirmed bool,
+	disclosure string,
+) (NetworkDoctorExecution, error) {
+	if ctx == nil || n == nil || n.d == nil {
+		return NetworkDoctorExecution{}, ErrDoctorInvalidRequest
+	}
+	if !confirmed || disclosure != doctorDisclosureVersion {
+		return NetworkDoctorExecution{}, ErrDoctorDisclosureRequired
+	}
+	if !validDoctorRepairAction(action) {
+		return NetworkDoctorExecution{}, ErrDoctorInvalidRequest
+	}
+	if !supportedDoctorRepair(action) {
+		return NetworkDoctorExecution{}, ErrDoctorRepairUnsupported
+	}
+	if !n.canExecuteRepair(action) {
+		return NetworkDoctorExecution{}, ErrDoctorRepairUnsupported
+	}
+	if !n.acquire() {
+		return NetworkDoctorExecution{}, ErrDoctorBusy
+	}
+	defer n.release()
+	if err := n.consumePlan(planID, action); err != nil {
+		return NetworkDoctorExecution{}, err
+	}
+
+	// Recreate the plan and execution snapshot after consuming the one-use
+	// authorization. The opaque plan ID authorizes only the selected action; it
+	// never turns stale plan JSON from the client into trusted executable input.
+	plannedSnapshot, _ := n.captureSnapshot(ctx)
+	_, plan := n.newDoctor(plannedSnapshot).Diagnose(ctx, plannedSnapshot)
+	var selected *diagnose.PlannedRepair
+	for i := range plan.Repairs {
+		if plan.Repairs[i].Action == action {
+			selected = &plan.Repairs[i]
+			break
+		}
+	}
+	if selected == nil || !selected.Applicable {
+		return NetworkDoctorExecution{}, ErrDoctorRepairNotApplicable
+	}
+	plan.Repairs = []diagnose.PlannedRepair{*selected}
+	fresh, _ := n.captureSnapshot(ctx)
+	report := n.newDoctor(fresh).ExecutePlan(ctx, fresh, plan, &daemonDoctorExecutor{d: n.d})
+	return NetworkDoctorExecution{Schema: doctorExecutionSchema, Execution: report}, nil
+}
+
+func marshalDoctorJSON(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", ErrDoctorUnavailable
+	}
+	if len(data) == 0 || len(data) > maxDoctorJSONBytes {
+		return "", ErrDoctorResponseTooLarge
+	}
+	return string(data), nil
+}
+
+func (n *NetworkDoctor) RunJSON(ctx context.Context, confirmed bool, disclosure string) (string, error) {
+	result, err := n.Run(ctx, confirmed, disclosure)
+	if err != nil {
+		return "", err
+	}
+	return marshalDoctorJSON(result)
+}
+
+func (n *NetworkDoctor) RepairJSON(
+	ctx context.Context,
+	planID string,
+	action diagnose.RepairActionID,
+	confirmed bool,
+	disclosure string,
+) (string, error) {
+	result, err := n.Repair(ctx, planID, action, confirmed, disclosure)
+	if err != nil {
+		return "", err
+	}
+	return marshalDoctorJSON(result)
+}
+
+func writeDoctorJSON(w http.ResponseWriter, value any) {
+	data, err := marshalDoctorJSON(value)
+	if err != nil {
+		writeDoctorError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, data)
+}
+
+func writeDoctorError(w http.ResponseWriter, err error) {
+	status := http.StatusServiceUnavailable
+	code := ErrDoctorUnavailable.Error()
+	switch {
+	case errors.Is(err, ErrDoctorDisclosureRequired):
+		status, code = http.StatusPreconditionRequired, ErrDoctorDisclosureRequired.Error()
+	case errors.Is(err, ErrDoctorBusy):
+		status, code = http.StatusTooManyRequests, ErrDoctorBusy.Error()
+	case errors.Is(err, ErrDoctorRepairUnsupported):
+		status, code = http.StatusNotImplemented, ErrDoctorRepairUnsupported.Error()
+	case errors.Is(err, ErrDoctorPlanRequired):
+		status, code = http.StatusPreconditionFailed, ErrDoctorPlanRequired.Error()
+	case errors.Is(err, ErrDoctorPlanMismatch):
+		status, code = http.StatusPreconditionFailed, ErrDoctorPlanMismatch.Error()
+	case errors.Is(err, ErrDoctorPlanExpired):
+		status, code = http.StatusGone, ErrDoctorPlanExpired.Error()
+	case errors.Is(err, ErrDoctorRepairNotApplicable):
+		status, code = http.StatusConflict, ErrDoctorRepairNotApplicable.Error()
+	case errors.Is(err, ErrDoctorInvalidRequest):
+		status, code = http.StatusBadRequest, ErrDoctorInvalidRequest.Error()
+	case errors.Is(err, ErrDoctorResponseTooLarge):
+		status, code = http.StatusInternalServerError, ErrDoctorResponseTooLarge.Error()
+	case errors.Is(err, ErrDoctorUnavailable):
+		status, code = http.StatusServiceUnavailable, ErrDoctorUnavailable.Error()
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, code, status)
 }
 
 func (d *Daemon) doctorBaseSnapshot() diagnose.Snapshot {
@@ -315,6 +649,35 @@ func supportedDoctorRepair(action diagnose.RepairActionID) bool {
 	}
 }
 
+func validDoctorRepairAction(action diagnose.RepairActionID) bool {
+	if len(action) == 0 || len(action) > 64 {
+		return false
+	}
+	for i := 0; i < len(action); i++ {
+		c := action[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func (n *NetworkDoctor) canExecuteRepair(action diagnose.RepairActionID) bool {
+	if n == nil || n.d == nil || !supportedDoctorRepair(action) {
+		return false
+	}
+	switch action {
+	case diagnose.ActionFlushDNS:
+		n.d.mu.Lock()
+		available := n.d.systemResolver != nil
+		runCtx := n.d.runCtx
+		n.d.mu.Unlock()
+		return available && (runCtx == nil || runCtx.Err() == nil)
+	default:
+		return false
+	}
+}
+
 type daemonDoctorExecutor struct {
 	d            *Daemon
 	capturedExit string
@@ -340,7 +703,14 @@ func (e *daemonDoctorExecutor) Apply(ctx context.Context, step diagnose.Step, sn
 	}
 	switch step.Op {
 	case diagnose.OpFlushDNS:
-		if err := e.d.systemResolver.FlushCache(); err != nil {
+		e.d.mu.Lock()
+		resolver := e.d.systemResolver
+		runCtx := e.d.runCtx
+		e.d.mu.Unlock()
+		if resolver == nil || (runCtx != nil && runCtx.Err() != nil) {
+			return errors.New("DNS cache flush unavailable")
+		}
+		if err := resolver.FlushCache(); err != nil {
 			return errors.New("DNS cache flush failed")
 		}
 		return nil

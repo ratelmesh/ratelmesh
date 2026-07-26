@@ -84,3 +84,9 @@
 "RatelMesh v%@ was downloaded and verified. Open the system installer now?" = "RatelMesh v%@ のダウンロードと検証が完了しました。システムインストーラを開きますか？";
 "Install now" = "今すぐインストール";
 "Later" = "後で";
+"Enter a valid one-use code in the form ratelmesh-xxxx-xxxx-xxxx." = "ratelmesh-xxxx-xxxx-xxxx 形式の有効なワンタイムコードを入力してください。";
+"Administrator authorization was cancelled. Approve it to finish setup." = "管理者の承認がキャンセルされました。設定を完了するには承認してください。";
+"The secure setup helper is unavailable. Reinstall RatelMesh or contact your administrator." = "安全な設定ヘルパーを利用できません。RatelMeshを再インストールするか、管理者に連絡してください。";
+"The one-use code was rejected or expired. Request a new code and try again." = "ワンタイムコードが拒否されたか、有効期限が切れています。新しいコードを取得して再試行してください。";
+"Enrollment did not complete. Check your connection and try again." = "登録を完了できませんでした。接続を確認して再試行してください。";
+"Unavailable" = "利用不可";

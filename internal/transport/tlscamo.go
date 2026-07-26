@@ -14,7 +14,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/pqcrypto"
+	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
 )
 
 // TLSCamo camouflages the link as ordinary HTTPS by wrapping it in a *real* TLS
@@ -34,20 +34,18 @@ import (
 //   - The server side generates a self-signed ECDSA P-256 certificate at runtime
 //     for serverName (see NewTLSCamoServer). Its PEM is exposed via CertPEM so
 //     the client can pin it out of band.
-//   - The client side (NewTLSCamoClient) either pins that PEM — verifying the
-//     server against a private root — or, when no pin is supplied, sets
-//     InsecureSkipVerify. The insecure mode is for test/dev only: because
-//     WireGuard underneath already authenticates and encrypts every packet, a
-//     forged TLS peer cannot read or inject WireGuard traffic, but real
-//     deployments should still pin (or use a real cert) so the camouflage layer
-//     itself is authenticated.
+//   - The client side (NewTLSCamoClient) requires that PEM and verifies the
+//     server against a private root. An unpinned connection fails closed:
+//     WireGuard would still protect tunneled packets, but the Relay admission
+//     exchange occurs outside WireGuard and must not be exposed to an active
+//     intermediary.
 //
 // Both sides must agree out of band on serverName (it becomes the SNI/ServerName
 // so the connection looks like a real site of that name).
 type TLSCamo struct {
 	serverName string
 	cert       tls.Certificate // server side: the self-signed leaf; unset on client
-	roots      *x509.CertPool  // client side: pinned root(s); nil => skip verify
+	roots      *x509.CertPool  // client side: pinned root(s)
 	pinned     bool            // client side: true when a cert was pinned
 	pinErr     error           // non-nil when a caller supplied an invalid pin
 }
@@ -72,21 +70,22 @@ func NewTLSCamoServer(serverName string) (*TLSCamo, error) {
 	return &TLSCamo{serverName: serverName, cert: cert}, nil
 }
 
-// NewTLSCamoClient builds the dialing side. If pinCert is a non-empty PEM-encoded
-// certificate it is pinned: the server must present exactly that certificate
-// (verified against a private root pool). If pinCert is nil the client uses
-// InsecureSkipVerify — acceptable for tests/dev only (see the type doc). In both
-// cases ServerName is set to serverName so the SNI matches a plausible site.
+// NewTLSCamoClient builds the dialing side. pinCert must be a non-empty
+// PEM-encoded certificate; the server must present that certificate and a
+// matching server name. Callers without a stable pin should use WSS backed by a
+// publicly trusted certificate instead.
 func NewTLSCamoClient(serverName string, pinCert []byte) *TLSCamo {
 	t := &TLSCamo{serverName: serverName}
-	if len(pinCert) > 0 {
-		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM(pinCert) {
-			t.roots = pool
-			t.pinned = true
-		} else {
-			t.pinErr = errors.New("tlscamo: supplied certificate pin is not valid PEM")
-		}
+	if len(pinCert) == 0 {
+		t.pinErr = errors.New("tlscamo: certificate pin is required; use authenticated WSS when no stable pin is available")
+		return t
+	}
+	pool := x509.NewCertPool()
+	if pool.AppendCertsFromPEM(pinCert) {
+		t.roots = pool
+		t.pinned = true
+	} else {
+		t.pinErr = errors.New("tlscamo: supplied certificate pin is not valid PEM")
 	}
 	return t
 }
@@ -100,13 +99,12 @@ func (t *TLSCamo) Client(raw net.Conn) (net.Conn, error) {
 	if t.pinErr != nil {
 		return nil, t.pinErr
 	}
+	if !t.pinned || t.roots == nil {
+		return nil, errors.New("tlscamo: certificate pin is required; use authenticated WSS when no stable pin is available")
+	}
 	cfg := pqcrypto.TLSConfig()
 	cfg.ServerName = t.serverName
-	if t.pinned {
-		cfg.RootCAs = t.roots
-	} else {
-		cfg.InsecureSkipVerify = true // test/dev only; see type doc.
-	}
+	cfg.RootCAs = t.roots
 	conn := tls.Client(raw, cfg)
 	if err := conn.Handshake(); err != nil {
 		return nil, fmt.Errorf("tlscamo: client handshake: %w", err)

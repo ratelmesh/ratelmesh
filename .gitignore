@@ -16,6 +16,6 @@
 *.swp
 scripts/e2e/bin/
 
-# Codex↔Claude coordination scratchpad (local working-tree channel, not product)
-CODEX_SYNC.md
-.claude/scheduled_tasks.lock
+# Local coordination scratchpad and scheduler state (not product source)
+COORDINATION_SYNC.md
+.agent-scheduler.lock

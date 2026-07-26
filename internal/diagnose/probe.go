@@ -61,6 +61,20 @@ func probeOrder(id ProbeID) int {
 	return len(canonicalProbeOrder)
 }
 
+// shareableProbeID preserves the fixed product probe ids and tokenizes every
+// caller-provided/custom id before it can enter a report. Config.Probes is
+// externally configurable, so an unknown value must not become a device name,
+// path or credential disclosure.
+func shareableProbeID(id ProbeID, redactor *Redactor) ProbeID {
+	if id == ProbeFramework {
+		return id
+	}
+	if _, ok := probeOrderIndex[id]; ok {
+		return id
+	}
+	return ProbeID(redactor.tokenIdentifier("probe", string(id)))
+}
+
 // Probe is a single bounded, context-cancellable check. Implementations must
 // honour ctx (returning promptly when it is cancelled or its deadline passes),
 // must never mutate the Env, and should return findings rather than panic.

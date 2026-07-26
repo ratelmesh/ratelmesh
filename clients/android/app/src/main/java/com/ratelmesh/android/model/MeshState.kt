@@ -13,7 +13,18 @@ data class Peer(
     val platform: String,
     val remoteAccessAllowed: Boolean,
     val remoteServices: List<RemoteService>,
-)
+) {
+    val authorizedRemoteServices: List<RemoteService>
+        get() = if (!remoteAccessAllowed || meshIp.isBlank()) {
+            emptyList()
+        } else {
+            remoteServices.filter {
+                it.kind in setOf("ssh", "rdp", "vnc") &&
+                    it.port in 1..65535 &&
+                    it.targetMeshIp == meshIp
+            }
+        }
+}
 
 data class RemoteService(val kind: String, val port: Int, val targetMeshIp: String)
 
@@ -51,6 +62,7 @@ internal fun parseStatus(json: String, current: MeshState): MeshState {
         if (peersJson != null) {
             for (index in 0 until peersJson.length()) {
                 val peer = peersJson.optJSONObject(index) ?: continue
+                val peerMeshIp = peer.optString("meshIP")
                 val servicesJson = peer.optJSONArray("remoteServices")
                 val services = buildList {
                     if (servicesJson != null) {
@@ -59,7 +71,11 @@ internal fun parseStatus(json: String, current: MeshState): MeshState {
                             val kind = service.optString("kind")
                             val port = service.optInt("port")
                             val targetMeshIp = service.optString("targetMeshIp")
-                            if (kind in setOf("ssh", "rdp", "vnc") && port in 1..65535 && targetMeshIp.isNotBlank()) {
+                            if (kind in setOf("ssh", "rdp", "vnc") &&
+                                port in 1..65535 &&
+                                targetMeshIp == peerMeshIp &&
+                                peerMeshIp.isNotBlank()
+                            ) {
                                 add(RemoteService(kind = kind, port = port, targetMeshIp = targetMeshIp))
                             }
                         }
@@ -68,7 +84,7 @@ internal fun parseStatus(json: String, current: MeshState): MeshState {
                 add(
                     Peer(
                         name = peer.optString("name"),
-                        meshIp = peer.optString("meshIP"),
+                        meshIp = peerMeshIp,
                         role = peer.optString("role"),
                         online = peer.optBoolean("online"),
                         pathType = peer.optString("pathType", "-"),

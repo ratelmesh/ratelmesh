@@ -106,7 +106,6 @@ func TestAuthorizeSourceUsesSignedPayloadOnly(t *testing.T) {
 
 func TestAuthorizeSourceRejectsEveryBindingMismatch(t *testing.T) {
 	f := newEnforcementFixture(t)
-	base := validSourceAuthorizationRequest(f, NewMemoryPolicyFloorStore())
 	tests := map[string]func(*SourceAuthorizationRequest){
 		"tenant":           func(r *SourceAuthorizationRequest) { r.Self.TenantID = "other" },
 		"grantee":          func(r *SourceAuthorizationRequest) { r.Self.NodeID = "other" },
@@ -121,7 +120,7 @@ func TestAuthorizeSourceRejectsEveryBindingMismatch(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			req := base
+			req := validSourceAuthorizationRequest(f, NewMemoryPolicyFloorStore())
 			mutate(&req)
 			if _, err := AuthorizeSource(req); err == nil {
 				t.Fatal("expected rejection")
@@ -566,6 +565,160 @@ func TestPolicyStateSignatureAndRollbackProtection(t *testing.T) {
 	}
 }
 
+func TestNewPolicyVersionRecoversFromFutureClockObservation(t *testing.T) {
+	f := newEnforcementFixture(t)
+	store := NewMemoryPolicyFloorStore()
+	future := f.now.Add(20 * 365 * 24 * time.Hour)
+
+	current, err := VerifyPolicyState(f.policy, f.verifier, f.target.TenantID, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Advance(current); err != nil {
+		t.Fatal(err)
+	}
+
+	nextSigned, err := SignPolicyState(PolicyState{
+		TenantID: f.target.TenantID,
+		Version:  current.Version + 1,
+		Enabled:  true,
+		IssuedAt: f.now.Add(time.Minute),
+	}, f.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := VerifyPolicyState(nextSigned, f.verifier, f.target.TenantID, f.now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err = ObservePolicyAt(next, current, true, f.now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Advance(next); err != nil {
+		t.Fatalf("new signed policy did not recover future observation: %v", err)
+	}
+	got, ok, err := store.Load(f.target.TenantID)
+	if err != nil || !ok {
+		t.Fatalf("load recovered policy: %#v, %v, %v", got, ok, err)
+	}
+	if got.Version != next.Version || !got.ObservedAt.Equal(next.ObservedAt) {
+		t.Fatalf("recovered policy = %#v, want %#v", got, next)
+	}
+}
+
+func TestAuthorizeSourceNewPolicyRecoversPersistedFutureObservation(t *testing.T) {
+	f := newEnforcementFixture(t)
+	store := NewMemoryPolicyFloorStore()
+	future := f.now.Add(20 * 365 * 24 * time.Hour)
+	current, err := VerifyPolicyState(f.policy, f.verifier, f.target.TenantID, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Advance(current); err != nil {
+		t.Fatal(err)
+	}
+
+	nextState := PolicyState{
+		TenantID: f.target.TenantID,
+		Version:  current.Version + 1,
+		Enabled:  true,
+		IssuedAt: f.now.Add(time.Minute),
+	}
+	nextPolicy, err := SignPolicyState(nextState, f.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextGrant := f.grant
+	nextGrant.PolicyVersion = nextState.Version
+	nextGrant.IssuedAt = f.now.Add(time.Minute)
+	nextGrant.NotBefore = f.now.Add(time.Minute)
+	nextGrant.ExpiresAt = f.now.Add(time.Hour)
+	req := validSourceAuthorizationRequest(f, store)
+	req.Now = f.now.Add(2 * time.Minute)
+	req.SignedPolicy = nextPolicy
+	req.SignedGrant = signFixtureGrant(t, f.signer, nextGrant)
+	if _, err := AuthorizeSource(req); err != nil {
+		t.Fatalf("new signed policy did not recover future clock observation: %v", err)
+	}
+	got, ok, err := store.Load(f.target.TenantID)
+	if err != nil || !ok {
+		t.Fatalf("load recovered floor: %#v, %v, %v", got, ok, err)
+	}
+	if !got.ObservedAt.Equal(req.Now.UTC()) {
+		t.Fatalf("observation remained pinned in future: %v", got.ObservedAt)
+	}
+}
+
+func TestReconcileTargetNewPolicyRecoversPersistedFutureObservation(t *testing.T) {
+	f := newEnforcementFixture(t)
+	store := NewMemoryPolicyFloorStore()
+	future := f.now.Add(20 * 365 * 24 * time.Hour)
+	current, err := VerifyPolicyState(f.policy, f.verifier, f.target.TenantID, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Advance(current); err != nil {
+		t.Fatal(err)
+	}
+
+	nextState := PolicyState{
+		TenantID: f.target.TenantID,
+		Version:  current.Version + 1,
+		Enabled:  true,
+		IssuedAt: f.now.Add(time.Minute),
+	}
+	nextPolicy, err := SignPolicyState(nextState, f.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextGrant := f.grant
+	nextGrant.PolicyVersion = nextState.Version
+	nextGrant.IssuedAt = f.now.Add(time.Minute)
+	nextGrant.NotBefore = f.now.Add(time.Minute)
+	nextGrant.ExpiresAt = f.now.Add(time.Hour)
+	req := validReconcileRequest(f)
+	req.PolicyStore = store
+	req.Now = f.now.Add(2 * time.Minute)
+	req.SignedPolicy = nextPolicy
+	req.Grants = []SignedGrant{signFixtureGrant(t, f.signer, nextGrant)}
+	result, err := ReconcileTarget(req)
+	if err != nil {
+		t.Fatalf("new signed policy did not recover future clock observation: %v", err)
+	}
+	if len(result.Rules) != 1 || len(result.Rejected) != 0 {
+		t.Fatalf("reconcile result = %#v", result)
+	}
+	got, ok, err := store.Load(f.target.TenantID)
+	if err != nil || !ok {
+		t.Fatalf("load recovered floor: %#v, %v, %v", got, ok, err)
+	}
+	if !got.ObservedAt.Equal(req.Now.UTC()) {
+		t.Fatalf("observation remained pinned in future: %v", got.ObservedAt)
+	}
+}
+
+func TestSamePolicyVersionCannotRecoverByRollingObservationBack(t *testing.T) {
+	f := newEnforcementFixture(t)
+	store := NewMemoryPolicyFloorStore()
+	future := f.now.Add(20 * 365 * 24 * time.Hour)
+
+	current, err := VerifyPolicyState(f.policy, f.verifier, f.target.TenantID, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Advance(current); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := VerifyPolicyState(f.policy, f.verifier, f.target.TenantID, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Advance(replayed); !errors.Is(err, ErrPolicyRollback) {
+		t.Fatalf("same-version observation rollback accepted: %v", err)
+	}
+}
+
 func TestFilePolicyFloorStoreRestartPermissionsAndRollback(t *testing.T) {
 	f := newEnforcementFixture(t)
 	verified, err := VerifyPolicyState(f.policy, f.verifier, f.target.TenantID, f.now)
@@ -746,6 +899,32 @@ func TestAuthorizeSourceFileFloorSurvivesRestartAndRejectsRollback(t *testing.T)
 	request.SignedGrant = signFixtureGrant(t, f.signer, staleGrant)
 	_, err = AuthorizeSource(request)
 	assertEnforcementCode(t, err, CodePolicyStale)
+}
+
+func TestAuthorizeSourceTrustedTimePreventsExpiredGrantRevivalAfterRestart(t *testing.T) {
+	f := newEnforcementFixture(t)
+	root := privateTestRoot(t)
+	store, err := NewFilePolicyFloorStore(root, "floor.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredRequest := validSourceAuthorizationRequest(f, store)
+	expiredRequest.Now = f.grant.ExpiresAt.Add(time.Minute)
+	_, err = AuthorizeSource(expiredRequest)
+	assertEnforcementCode(t, err, CodeGrantTime)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewFilePolicyFloorStore(root, "floor.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	rolledBack := validSourceAuthorizationRequest(f, restarted)
+	rolledBack.Now = f.now
+	_, err = AuthorizeSource(rolledBack)
+	assertEnforcementCode(t, err, CodeGrantTime)
 }
 
 func TestMemoryPolicyFloorStoreRace(t *testing.T) {

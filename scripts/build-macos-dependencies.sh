@@ -12,13 +12,26 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$REPO/packaging/macos/dependencies.env"
 OUT=$1
+if [[ -e "$OUT" || -L "$OUT" ]]; then
+  echo "dependency output directory must not already exist: $OUT" >&2
+  exit 2
+fi
+OUT_PARENT=$(dirname -- "$OUT")
+mkdir -p "$OUT_PARENT"
+OUT_PARENT=$(cd "$OUT_PARENT" && pwd)
+OUT="$OUT_PARENT/$(basename -- "$OUT")"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ratelmesh-macos-deps.XXXXXX")
+STAGE=$(mktemp -d "$OUT_PARENT/.ratelmesh-macos-deps.XXXXXX")
+chmod 0700 "$STAGE"
 cleanup() {
   # The Go module cache intentionally makes downloaded sources read-only.
   # Restore owner write permission so the private temporary GOPATH can be
   # removed without noisy permission failures.
   chmod -R u+w "$WORK" 2>/dev/null || true
   rm -rf "$WORK"
+  if [[ -n "${STAGE:-}" ]]; then
+    rm -rf "$STAGE"
+  fi
   if [[ -n "${PARTIAL:-}" ]]; then
     rm -f "$PARTIAL"
   fi
@@ -43,8 +56,24 @@ fi
 TOOLS_ARCHIVE_NAME="wireguard-tools-$RATELMESH_WIREGUARD_TOOLS_VERSION.tar.xz"
 TOOLS_URL="https://git.zx2c4.com/wireguard-tools/snapshot/$TOOLS_ARCHIVE_NAME"
 CACHE=${RATELMESH_BUILD_CACHE:-$HOME/Library/Caches/RatelMesh/build}
-mkdir -p "$CACHE"
-chmod 700 "$CACHE"
+if [[ -L "$CACHE" ]]; then
+  echo "build cache must not be a symbolic link: $CACHE" >&2
+  exit 1
+fi
+if [[ -e "$CACHE" ]]; then
+  if [[ ! -d "$CACHE" ]]; then
+    echo "build cache must be a directory: $CACHE" >&2
+    exit 1
+  fi
+  CACHE_MODE=$(stat -f '%Lp' "$CACHE")
+  if (( (8#$CACHE_MODE & 8#077) != 0 )); then
+    echo "existing build cache must not grant group or other access: $CACHE" >&2
+    exit 1
+  fi
+else
+  install -d -m 700 "$CACHE"
+fi
+CACHE=$(cd "$CACHE" && pwd)
 CACHED_ARCHIVE="$CACHE/$TOOLS_ARCHIVE_NAME"
 
 verify_archive() {
@@ -56,17 +85,22 @@ verify_archive() {
 
 if [[ -n "${RATELMESH_WIREGUARD_TOOLS_ARCHIVE:-}" ]]; then
   TOOLS_ARCHIVE=$RATELMESH_WIREGUARD_TOOLS_ARCHIVE
-  if [[ ! -f "$TOOLS_ARCHIVE" ]] || ! verify_archive "$TOOLS_ARCHIVE"; then
+  if [[ ! -f "$TOOLS_ARCHIVE" || -L "$TOOLS_ARCHIVE" ]] ||
+      ! verify_archive "$TOOLS_ARCHIVE"; then
     echo "RATELMESH_WIREGUARD_TOOLS_ARCHIVE does not match the pinned SHA-256" >&2
     exit 1
   fi
 else
   TOOLS_ARCHIVE=$CACHED_ARCHIVE
+  if [[ -L "$TOOLS_ARCHIVE" ]]; then
+    echo "cached wireguard-tools source must not be a symbolic link" >&2
+    exit 1
+  fi
   if [[ -f "$TOOLS_ARCHIVE" ]] && ! verify_archive "$TOOLS_ARCHIVE"; then
     rm -f "$TOOLS_ARCHIVE"
   fi
   if [[ ! -f "$TOOLS_ARCHIVE" ]]; then
-    PARTIAL="$TOOLS_ARCHIVE.partial.$$"
+    PARTIAL=$(mktemp "$CACHE/.wireguard-tools.XXXXXX")
     curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
       --output "$PARTIAL" "$TOOLS_URL"
     if ! verify_archive "$PARTIAL"; then
@@ -74,12 +108,25 @@ else
       exit 1
     fi
     chmod 600 "$PARTIAL"
-    mv "$PARTIAL" "$TOOLS_ARCHIVE"
+    if ! ln "$PARTIAL" "$TOOLS_ARCHIVE"; then
+      if [[ -L "$TOOLS_ARCHIVE" || ! -f "$TOOLS_ARCHIVE" ]] ||
+          ! verify_archive "$TOOLS_ARCHIVE"; then
+        echo "concurrent dependency cache publication was not trustworthy" >&2
+        exit 1
+      fi
+    fi
+    rm -f "$PARTIAL"
     unset PARTIAL
   fi
 fi
 
-tar -xJf "$TOOLS_ARCHIVE" -C "$WORK"
+TOOLS_ARCHIVE_PRIVATE="$WORK/$TOOLS_ARCHIVE_NAME"
+install -m 600 "$TOOLS_ARCHIVE" "$TOOLS_ARCHIVE_PRIVATE"
+if ! verify_archive "$TOOLS_ARCHIVE_PRIVATE"; then
+  echo "wireguard-tools source changed while entering the private build area" >&2
+  exit 1
+fi
+tar -xJf "$TOOLS_ARCHIVE_PRIVATE" -C "$WORK"
 TOOLS_SOURCE="$WORK/wireguard-tools-$RATELMESH_WIREGUARD_TOOLS_VERSION"
 if [[ ! -f "$TOOLS_SOURCE/src/Makefile" || ! -f "$TOOLS_SOURCE/COPYING" ]]; then
   echo "wireguard-tools source archive has an unexpected layout" >&2
@@ -130,34 +177,36 @@ for arch in amd64 arm64; do
   mv "$BUILT" "$WORK/wireguard-go-$arch"
 done
 
-rm -rf "$OUT"
-mkdir -p "$OUT/bin" \
-  "$OUT/licenses/wireguard-go" \
-  "$OUT/licenses/wireguard-tools" \
-  "$OUT/sources"
-lipo -create "$WORK/wg-x86_64" "$WORK/wg-arm64" -output "$OUT/bin/wg"
+mkdir -p "$STAGE/bin" \
+  "$STAGE/licenses/wireguard-go" \
+  "$STAGE/licenses/wireguard-tools" \
+  "$STAGE/sources"
+lipo -create "$WORK/wg-x86_64" "$WORK/wg-arm64" -output "$STAGE/bin/wg"
 lipo -create "$WORK/wireguard-go-amd64" "$WORK/wireguard-go-arm64" \
-  -output "$OUT/bin/wireguard-go"
-chmod 755 "$OUT/bin/wg" "$OUT/bin/wireguard-go"
-install -m 644 "$MODULE_DIR/LICENSE" "$OUT/licenses/wireguard-go/LICENSE"
-install -m 644 "$TOOLS_SOURCE/COPYING" "$OUT/licenses/wireguard-tools/COPYING"
-install -m 644 "$TOOLS_ARCHIVE" "$OUT/sources/$TOOLS_ARCHIVE_NAME"
+  -output "$STAGE/bin/wireguard-go"
+chmod 755 "$STAGE/bin/wg" "$STAGE/bin/wireguard-go"
+install -m 644 "$MODULE_DIR/LICENSE" "$STAGE/licenses/wireguard-go/LICENSE"
+install -m 644 "$TOOLS_SOURCE/COPYING" "$STAGE/licenses/wireguard-tools/COPYING"
+install -m 644 "$TOOLS_ARCHIVE_PRIVATE" "$STAGE/sources/$TOOLS_ARCHIVE_NAME"
 install -m 644 "$REPO/packaging/macos/THIRD-PARTY-NOTICES.txt" \
-  "$OUT/THIRD-PARTY-NOTICES.txt"
+  "$STAGE/THIRD-PARTY-NOTICES.txt"
 install -m 644 "$REPO/packaging/macos/dependencies.env" \
-  "$OUT/BUILD-DEPENDENCIES.env"
+  "$STAGE/BUILD-DEPENDENCIES.env"
 
 for binary in wg wireguard-go; do
-  [[ "$(lipo -archs "$OUT/bin/$binary")" == "x86_64 arm64" ]]
+  [[ "$(lipo -archs "$STAGE/bin/$binary")" == "x86_64 arm64" ]]
 done
-[[ "$($OUT/bin/wg --version)" == \
+[[ "$($STAGE/bin/wg --version)" == \
   "wireguard-tools v$RATELMESH_WIREGUARD_TOOLS_VERSION - https://git.zx2c4.com/wireguard-tools/" ]]
 for arch in x86_64 arm64; do
   THIN="$WORK/wireguard-go-check-$arch"
-  lipo "$OUT/bin/wireguard-go" -thin "$arch" -output "$THIN"
+  lipo "$STAGE/bin/wireguard-go" -thin "$arch" -output "$THIN"
   [[ "$(go version -m "$THIN" | head -n 1 | awk '{print $2}')" == "$RATELMESH_GO_VERSION" ]]
   go version -m "$THIN" | grep -Fq \
     $'mod\tgolang.zx2c4.com/wireguard\t'"$RATELMESH_WIREGUARD_GO_VERSION"$'\t'"$RATELMESH_WIREGUARD_GO_SUM"
 done
 
+chmod 0755 "$STAGE"
+go run "$REPO/scripts/publish-directory" "$STAGE" "$OUT"
+STAGE=
 echo "$OUT"

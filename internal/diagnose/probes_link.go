@@ -153,7 +153,7 @@ func (mtuProbe) Run(ctx context.Context, env *Env) ProbeResult {
 			res.add(newFinding(ProbeMTU, CodeMTUProbeError,
 				"the active path MTU probe failed; path MTU is unknown and was not inferred from the link MTU",
 				map[string]string{
-					"error":       err.Error(),
+					"error_class": safeErrorClass(err),
 					"search_low":  fmt.Sprint(cfg.SearchLow),
 					"search_high": fmt.Sprint(cfg.SearchHigh),
 				}))

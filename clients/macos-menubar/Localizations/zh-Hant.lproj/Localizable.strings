@@ -84,3 +84,9 @@
 "RatelMesh v%@ was downloaded and verified. Open the system installer now?" = "RatelMesh v%@ 已下載並通過簽章驗證。現在開啟系統安裝程式嗎？";
 "Install now" = "立即安裝";
 "Later" = "稍後";
+"Enter a valid one-use code in the form ratelmesh-xxxx-xxxx-xxxx." = "請輸入格式為 ratelmesh-xxxx-xxxx-xxxx 的有效一次性入網碼。";
+"Administrator authorization was cancelled. Approve it to finish setup." = "管理員授權已取消。請批准授權以完成設定。";
+"The secure setup helper is unavailable. Reinstall RatelMesh or contact your administrator." = "安全設定輔助程式無法使用。請重新安裝 RatelMesh 或聯絡管理員。";
+"The one-use code was rejected or expired. Request a new code and try again." = "一次性入網碼已被拒絕或過期。請取得新的入網碼後再試一次。";
+"Enrollment did not complete. Check your connection and try again." = "註冊未完成。請檢查網路連線後再試一次。";
+"Unavailable" = "無法使用";

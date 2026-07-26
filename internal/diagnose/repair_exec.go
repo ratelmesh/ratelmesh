@@ -8,7 +8,7 @@ import (
 
 // The execution seam. This package orchestrates repairs — ordering,
 // snapshot-before-apply, rollback-on-failure, allowlist enforcement — but runs
-// no privileged command itself. Wade injects an Executor that implements the
+// no privileged command itself. The daemon injects an Executor that implements the
 // allowlisted primitives; a fake Executor in _test.go exercises the
 // orchestration without any double reaching product code.
 
@@ -555,13 +555,13 @@ func (r ExecutionReport) MarshalJSON() ([]byte, error) {
 			Action:    rep.Action,
 			Status:    rep.Status,
 			Snapshots: rep.snapshotKinds,
-			Error:     rep.Error,
+			Error:     shareableRepairError(rep.Status, rep.Error),
 		}
 		for _, s := range rep.Applied {
-			rw.Applied = append(rw.Applied, stepResultWire(s))
+			rw.Applied = append(rw.Applied, shareableStepResult(s))
 		}
 		for _, s := range rep.RolledBack {
-			rw.RolledBack = append(rw.RolledBack, stepResultWire(s))
+			rw.RolledBack = append(rw.RolledBack, shareableStepResult(s))
 		}
 		w.Repairs = append(w.Repairs, rw)
 	}
@@ -574,4 +574,23 @@ func (r ExecutionReport) MarshalJSON() ([]byte, error) {
 		red = NewRedactor(nil)
 	}
 	return red.RedactJSON(raw)
+}
+
+// shareableRepairError intentionally does not serialize executor error text.
+// Executor implementations commonly include device names, paths, addresses or
+// command output in errors. The stable status/action/step fields carry the
+// actionable contract without exporting that private text.
+func shareableRepairError(status RepairStatus, raw string) string {
+	if raw == "" {
+		return ""
+	}
+	return "repair_" + string(status)
+}
+
+func shareableStepResult(result StepResult) stepResultWire {
+	out := stepResultWire{Op: result.Op, OK: result.OK}
+	if result.Error != "" {
+		out.Error = "operation_failed"
+	}
+	return out
 }

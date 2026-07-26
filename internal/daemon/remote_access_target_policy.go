@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 type remoteTargetPolicyErrorCode string
@@ -100,15 +100,28 @@ func (d *Daemon) deriveRemoteTargetPolicy(nm types.Netmap, now time.Time) (remot
 
 	tenantID := remoteAccessTenantID(nm.Self.User)
 	verifier := remoteaccess.Ed25519Verifier{PublicKey: d.cfg.VerifyKey}
+	trustedNow, err := remoteaccess.PolicyTimeFloor(d.remotePolicyStore, tenantID, now)
+	if err != nil {
+		return closed, targetPolicyError(remoteTargetPolicyStorage, err)
+	}
 	verifiedPolicy, err := remoteaccess.VerifyPolicyState(
 		nm.RemoteAccessPolicyState,
 		verifier,
 		tenantID,
-		now,
+		trustedNow,
 	)
 	if err != nil {
 		return closed, targetPolicyError(remoteTargetPolicySignature, err)
 	}
+	currentPolicy, policyExists, err := d.remotePolicyStore.Load(tenantID)
+	if err != nil {
+		return closed, targetPolicyError(remoteTargetPolicyStorage, err)
+	}
+	verifiedPolicy, err = remoteaccess.ObservePolicyAt(verifiedPolicy, currentPolicy, policyExists, now)
+	if err != nil {
+		return closed, targetPolicyError(remoteTargetPolicyStorage, err)
+	}
+	trustedNow = verifiedPolicy.ObservedAt
 	closed.PolicyVersion = verifiedPolicy.Version
 	// Advance the authenticated revocation floor before inspecting any mutable
 	// echo, target activation, service or peer observation. None of that mutable
@@ -129,7 +142,7 @@ func (d *Daemon) deriveRemoteTargetPolicy(nm types.Netmap, now time.Time) (remot
 		verifier,
 		verifiedPolicy,
 		nm.Self.ID,
-		now,
+		trustedNow,
 	)
 	if err != nil {
 		return closed, targetPolicyError(remoteTargetPolicySignature, err)
@@ -181,7 +194,7 @@ func (d *Daemon) deriveRemoteTargetPolicy(nm types.Netmap, now time.Time) (remot
 		Verifier:     verifier,
 		PolicyStore:  d.remotePolicyStore,
 		SignedPolicy: nm.RemoteAccessPolicyState,
-		Now:          now,
+		Now:          trustedNow,
 		Grants:       cloneRemoteTargetGrants(nm.RemoteAccessGrants),
 	})
 	if err != nil {

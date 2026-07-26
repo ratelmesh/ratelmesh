@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -53,6 +55,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -69,6 +73,9 @@ import androidx.compose.ui.unit.dp
 import com.ratelmesh.android.data.ClientSettings
 import com.ratelmesh.android.data.SecureSettings
 import com.ratelmesh.android.data.VpnDisclosureConsent
+import com.ratelmesh.android.doctor.NetworkDoctorRoute
+import com.ratelmesh.android.doctor.MobileNetworkDoctorGateway
+import com.ratelmesh.android.doctor.NetworkDoctorGatewayProvider
 import com.ratelmesh.android.model.ConnectionPhase
 import com.ratelmesh.android.model.MeshState
 import com.ratelmesh.android.service.MeshRuntime
@@ -101,6 +108,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NetworkDoctorGatewayProvider.factory = { MobileNetworkDoctorGateway(applicationContext) }
         val secureSettings = SecureSettings(this)
         val privacyPreferences = getSharedPreferences("privacy", MODE_PRIVATE)
         val initial = secureSettings.load().let {
@@ -121,26 +129,33 @@ class MainActivity : ComponentActivity() {
             var showPrivacy by remember {
                 mutableStateOf(!privacyPreferences.getBoolean("geographic_privacy_v1", false))
             }
+            var showNetworkDoctor by rememberSaveable { mutableStateOf(false) }
             RatelMeshTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    MeshScreen(
-                        initialSettings = initial,
-                        selectedLanguage = AppLanguagePreferences.load(this),
-                        onLanguage = { language ->
-                            if (language != AppLanguagePreferences.load(this)) {
-                                AppLanguagePreferences.save(this, language)
-                                recreate()
-                            }
-                        },
-                        onConnect = { settings ->
-                            if (VpnDisclosureConsent.isAccepted(this)) connect(secureSettings, settings)
-                            else pendingConnection = settings
-                        },
-                        onDisconnect = { MeshVpnService.stop(this) },
-                        onUseExit = { MeshVpnService.useExit(this, it) },
-                        onClearExit = { MeshVpnService.clearExit(this) },
-                        onPrivacy = { showPrivacy = true },
-                    )
+                    if (showNetworkDoctor) {
+                        NetworkDoctorRoute(onClose = { showNetworkDoctor = false })
+                    } else {
+                        MeshScreen(
+                            initialSettings = initial,
+                            selectedLanguage = AppLanguagePreferences.load(this),
+                            onLanguage = { language ->
+                                if (language != AppLanguagePreferences.load(this)) {
+                                    AppLanguagePreferences.save(this, language)
+                                    MeshVpnService.refreshLanguage(this)
+                                    recreate()
+                                }
+                            },
+                            onConnect = { settings ->
+                                if (VpnDisclosureConsent.isAccepted(this)) connect(secureSettings, settings)
+                                else pendingConnection = settings
+                            },
+                            onDisconnect = { MeshVpnService.stop(this) },
+                            onUseExit = { MeshVpnService.useExit(this, it) },
+                            onClearExit = { MeshVpnService.clearExit(this) },
+                            onPrivacy = { showPrivacy = true },
+                            onNetworkDoctor = { showNetworkDoctor = true },
+                        )
+                    }
                     pendingConnection?.let { settings ->
                         VpnDisclosureDialog(
                             onAccept = {
@@ -242,6 +257,7 @@ private fun VpnDisclosureDialog(onAccept: () -> Unit, onDecline: () -> Unit) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MeshScreen(
     initialSettings: ClientSettings,
@@ -252,6 +268,7 @@ private fun MeshScreen(
     onUseExit: (String) -> Unit,
     onClearExit: () -> Unit,
     onPrivacy: () -> Unit,
+    onNetworkDoctor: () -> Unit,
 ) {
     val context = LocalContext.current
     val state by MeshRuntime.state.collectAsState()
@@ -284,6 +301,28 @@ private fun MeshScreen(
         )
 
         StatusCard(state)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(stringResource(R.string.doctor_entry), fontWeight = FontWeight.Bold)
+                Text(
+                    stringResource(R.string.doctor_entry_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onNetworkDoctor, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.doctor_start))
+                }
+            }
+        }
 
         if (!active) {
             SectionLabel(stringResource(R.string.first_connection))
@@ -402,7 +441,7 @@ private fun MeshScreen(
                 }
             }
         }
-        val remotePeers = state.peers.filter { it.remoteAccessAllowed && it.meshIp.isNotBlank() }
+        val remotePeers = state.peers.filter { it.authorizedRemoteServices.isNotEmpty() }
         if (remotePeers.isNotEmpty()) {
             SectionLabel(stringResource(R.string.remote_access))
             remotePeers.forEach { peer ->
@@ -415,13 +454,28 @@ private fun MeshScreen(
                 ) {
                     Text(peer.name.ifBlank { peer.meshIp }, fontWeight = FontWeight.SemiBold)
                     Text("${peer.meshIp} · ${peer.platform}", style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        peer.remoteServices.forEach { service ->
-                            OutlinedButton(onClick = {
-                                openRemoteAccess(context, service.kind, service.targetMeshIp, service.port)
-                            }) {
-                                Text(if (service.kind == "vnc") stringResource(R.string.remote_screen) else service.kind.uppercase())
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        peer.authorizedRemoteServices.forEach { service ->
+                            val serviceLabel = if (service.kind == "vnc") {
+                                stringResource(R.string.remote_screen)
+                            } else {
+                                service.kind.uppercase()
                             }
+                            OutlinedButton(
+                                onClick = {
+                                    openRemoteAccess(context, service.kind, service.targetMeshIp, service.port)
+                                },
+                                modifier = Modifier.semantics {
+                                    contentDescription = remoteAccessAccessibilityLabel(
+                                        serviceLabel,
+                                        peer.name,
+                                        peer.meshIp,
+                                    )
+                                },
+                            ) { Text(serviceLabel) }
                         }
                     }
                 }
@@ -439,10 +493,15 @@ private fun MeshScreen(
     }
 }
 
+private fun remoteAccessAccessibilityLabel(
+    serviceLabel: String,
+    peerName: String,
+    meshIp: String,
+): String = "$serviceLabel, ${peerName.ifBlank { meshIp }}"
+
 private fun openRemoteAccess(context: Context, scheme: String, meshIp: String, port: Int) {
-    if (scheme !in setOf("ssh", "rdp", "vnc") || meshIp.isBlank() || port !in 1..65535) return
-    val host = if (':' in meshIp) "[$meshIp]" else meshIp
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://$host:$port"))
+    val target = RemoteAccessTarget.url(scheme, meshIp, port) ?: return
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target))
     try {
         context.startActivity(intent)
     } catch (_: Exception) {
@@ -456,7 +515,7 @@ private fun BrandHeader(selectedLanguage: AppLanguage, onSelect: (AppLanguage) -
     fun Brand(modifier: Modifier = Modifier) {
         Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Image(
-                painter = painterResource(R.mipmap.ic_launcher),
+                painter = painterResource(R.drawable.brand_mark),
                 contentDescription = null,
                 modifier = Modifier.size(34.dp),
             )
@@ -504,14 +563,16 @@ private fun SectionLabel(label: String) {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MeshListRow(content: @Composable () -> Unit) {
-    Row(
+    FlowRow(
         modifier = Modifier
             .fillMaxWidth()
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
             .padding(15.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         content()
     }
@@ -536,11 +597,9 @@ private fun LanguageSelector(
             AppLanguage.entries.forEach { language ->
                 DropdownMenuItem(
                     text = {
-                        Text(
-                            if (language == selected) "✓ ${languageLabel(language)}"
-                            else languageLabel(language),
-                        )
+                        Text(languageLabel(language))
                     },
+                    modifier = Modifier.semantics { this.selected = language == selected },
                     onClick = {
                         expanded = false
                         onSelect(language)
@@ -587,6 +646,7 @@ private fun languageShortLabel(language: AppLanguage): String = when (language) 
     AppLanguage.TRADITIONAL_CHINESE -> stringResource(R.string.language_short_traditional)
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StatusCard(state: MeshState) {
     val (label, color) = when (state.phase) {
@@ -603,9 +663,10 @@ private fun StatusCard(state: MeshState) {
         border = BorderStroke(1.dp, MeshOutline),
     ) {
         Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
                     stringResource(R.string.connection).uppercase(),
@@ -730,12 +791,14 @@ private fun RouteButton(selected: Boolean, label: String, onClick: () -> Unit) {
     if (selected) {
         Button(
             onClick = onClick,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { this.selected = true },
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
-        ) { Text("✓ $label", fontWeight = FontWeight.Bold) }
+        ) { Text(label, fontWeight = FontWeight.Bold) }
     } else {
         OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) { Text(label) }
     }

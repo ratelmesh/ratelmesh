@@ -15,22 +15,39 @@ enum EnrollmentCode {
     }
 }
 
-enum EnrollmentFailure: LocalizedError {
-    case authorization(OSStatus)
+enum EnrollmentFailure: Error {
+    case invalidCode
+    case authorization
     case unavailable
-    case execution(OSStatus)
-    case failed(String)
+    case execution
+    case delivery
+    case rejected
+}
 
-    var errorDescription: String? {
-        switch self {
-        case let .authorization(status):
-            return "Administrator authorization failed (\(status))."
-        case .unavailable:
-            return "The privileged enrollment service is unavailable on this Mac."
-        case let .execution(status):
-            return "The enrollment helper could not start (\(status))."
-        case let .failed(detail):
-            return detail.isEmpty ? "Enrollment did not complete." : detail
+enum TrustedPrivilegedHelper {
+    static func validate(_ path: String) throws {
+        guard path.hasPrefix("/"), !path.contains("/../") else {
+            throw EnrollmentFailure.unavailable
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        var current = ""
+        for (index, component) in components.enumerated() {
+            current += "/\(component)"
+            var metadata = stat()
+            guard lstat(current, &metadata) == 0,
+                  metadata.st_uid == 0,
+                  metadata.st_mode & (S_IWGRP | S_IWOTH) == 0,
+                  access(current, W_OK) != 0 else {
+                throw EnrollmentFailure.unavailable
+            }
+            let kind = metadata.st_mode & S_IFMT
+            let expected = index == components.count - 1 ? S_IFREG : S_IFDIR
+            guard kind == expected else {
+                throw EnrollmentFailure.unavailable
+            }
+        }
+        guard access(path, X_OK) == 0 else {
+            throw EnrollmentFailure.unavailable
         }
     }
 }
@@ -45,23 +62,25 @@ private typealias ExecuteWithPrivileges = @convention(c) (
 
 enum PrivilegedEnrollment {
     private static let helper = "/usr/local/ratelmesh/bin/ratelmesh-enroll"
+    private static let maximumOutputBytes = 64 * 1024
 
-    static func run(code input: String) async throws -> String {
+    static func run(code input: String) async throws {
         let code = EnrollmentCode.normalized(input)
         guard EnrollmentCode.valid(code) else {
-            throw EnrollmentFailure.failed("Invalid code format. Expected ratelmesh-xxxx-xxxx-xxxx.")
+            throw EnrollmentFailure.invalidCode
         }
         return try await Task.detached(priority: .userInitiated) {
             try execute(code: code)
         }.value
     }
 
-    private static func execute(code: String) throws -> String {
+    private static func execute(code: String) throws {
+        try TrustedPrivilegedHelper.validate(helper)
         var authorization: AuthorizationRef?
         let flags: AuthorizationFlags = [.interactionAllowed, .extendRights, .preAuthorize]
         let authStatus = AuthorizationCreate(nil, nil, flags, &authorization)
         guard authStatus == errAuthorizationSuccess, let authorization else {
-            throw EnrollmentFailure.authorization(authStatus)
+            throw EnrollmentFailure.authorization
         }
         defer { AuthorizationFree(authorization, []) }
 
@@ -77,37 +96,59 @@ enum PrivilegedEnrollment {
             execute(authorization, path, [], nil, &pipe)
         }
         guard status == errAuthorizationSuccess, let pipe else {
-            throw EnrollmentFailure.execution(status)
+            throw EnrollmentFailure.execution
         }
 
         let descriptor = fileno(pipe)
-        let request = Data((code + "\n").utf8)
-        let sent = request.withUnsafeBytes { bytes in
-            Darwin.write(descriptor, bytes.baseAddress, bytes.count)
-        }
-        guard sent == request.count else {
+        var request = Data((code + "\n").utf8)
+        do {
+            try writeAll(request, to: descriptor)
+        } catch {
+            request.resetBytes(in: request.startIndex..<request.endIndex)
             fclose(pipe)
-            throw EnrollmentFailure.failed("The enrollment code could not be delivered to the system helper.")
+            throw EnrollmentFailure.delivery
         }
+        request.resetBytes(in: request.startIndex..<request.endIndex)
         shutdown(descriptor, SHUT_WR)
 
         var output = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
             let count = Darwin.read(descriptor, &buffer, buffer.count)
-            if count <= 0 { break }
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                fclose(pipe)
+                throw EnrollmentFailure.delivery
+            }
+            guard output.count <= maximumOutputBytes - count else {
+                fclose(pipe)
+                throw EnrollmentFailure.delivery
+            }
             output.append(buffer, count: count)
         }
         fclose(pipe)
 
-        let text = String(decoding: output, as: UTF8.self)
-        guard text.contains("RatelMesh enrollment completed.") else {
-            let detail = text
-                .split(separator: "\n")
-                .suffix(4)
-                .joined(separator: "\n")
-            throw EnrollmentFailure.failed(detail)
+        let success = Data("RatelMesh enrollment completed.".utf8)
+        guard output.range(of: success) != nil else {
+            throw EnrollmentFailure.rejected
         }
-        return text
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard var pointer = rawBuffer.baseAddress else { return }
+            var remaining = rawBuffer.count
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, pointer, remaining)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw EnrollmentFailure.delivery
+                }
+                guard written > 0 else { throw EnrollmentFailure.delivery }
+                remaining -= written
+                pointer = pointer.advanced(by: written)
+            }
+        }
     }
 }

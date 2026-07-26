@@ -3,13 +3,16 @@
 package wgengine
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/bits"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -111,26 +114,52 @@ func createUtunDarwinManaged(log *slog.Logger) (string, *os.Process, <-chan erro
 	return "", nil, nil, fmt.Errorf("wgengine: timed out waiting for utun name")
 }
 
-func deleteInterface(log *slog.Logger, iface string) {
+func deleteInterface(log *slog.Logger, iface string) error {
 	switch runtime.GOOS {
 	case "linux":
-		_ = run(log, "ip", "link", "del", iface)
+		if err := run(log, "ip", "link", "del", iface); err != nil {
+			return fmt.Errorf("wgengine: delete Linux interface %q: %w", iface, err)
+		}
 	case "darwin":
 		// The utun disappears when the wireguard-go process exits; best-effort
 		// down here. (Process lifecycle teardown is handled by the daemon.)
-		_ = exec.Command("ifconfig", iface, "down").Run()
+		if err := exec.Command("ifconfig", iface, "down").Run(); err != nil {
+			return fmt.Errorf("wgengine: bring macOS interface %q down: %w", iface, err)
+		}
 	case "windows":
 		path, err := wireGuardWindowsPath()
-		if err == nil {
-			_ = run(log, path, "/uninstalltunnelservice", iface)
+		if err != nil {
+			return err
 		}
+		uninstallErr := run(log, path, "/uninstalltunnelservice", iface)
+		script := fmt.Sprintf(
+			"$s=Get-Service -Name 'WireGuardTunnel$%s' -ErrorAction SilentlyContinue; "+
+				"$a=Get-NetAdapter -Name '%s' -ErrorAction SilentlyContinue; "+
+				"if ($null -ne $s -or $null -ne $a) { exit 1 }",
+			iface, iface,
+		)
+		if out, err := exec.Command(windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput(); err != nil {
+			return errors.Join(
+				uninstallErr,
+				fmt.Errorf("wgengine: Windows tunnel service %q still present after uninstall: %v: %s", iface, err, strings.TrimSpace(string(out))),
+			)
+		}
+		// A non-zero manager result is benign only when the service and adapter
+		// are both proven absent (the normal first-install case).
+		return nil
 	}
+	return nil
 }
 
 func ifaceUp(iface string) error {
 	switch runtime.GOOS {
 	case "linux":
-		return ipCmd("link", "set", iface, "up")
+		for _, args := range interfaceUpPlan(runtime.GOOS, iface) {
+			if err := ipCmd(args...); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "darwin":
 		return exec.Command("ifconfig", iface, "up").Run()
 	case "windows":
@@ -138,6 +167,16 @@ func ifaceUp(iface string) error {
 		return nil
 	}
 	return nil
+}
+
+func interfaceUpPlan(goos, iface string) [][]string {
+	if goos != "linux" {
+		return nil
+	}
+	return [][]string{
+		{"link", "set", "dev", iface, "mtu", strconv.Itoa(pathSafeTunnelMTU)},
+		{"link", "set", "dev", iface, "up"},
+	}
 }
 
 // applyInterfaceAddresses assigns mesh addresses to the interface.
@@ -171,14 +210,27 @@ func applyInterfaceAddresses(iface string, addrs []netip.Prefix) error {
 // windowsRemoveExactRoute in reconfigureWindowsLocked, because the tunnel
 // service owns the AllowedIPs routes and we must track only our own additions.
 
+type unixRouteKind uint8
+
+const (
+	unixRouteTunnel unixRouteKind = iota
+	unixRouteDirect
+	unixRouteBlackhole
+	unixRoutePin
+)
+
+type unixManagedRoute struct {
+	prefix  netip.Prefix
+	gateway netip.Addr
+	device  string
+	kind    unixRouteKind
+}
+
 func routeAdd(p netip.Prefix, dev string) error {
 	switch runtime.GOOS {
 	case "linux":
-		return ipCmd("route", "replace", p.String(), "dev", dev)
+		return ipCmd("route", "add", p.String(), "dev", dev)
 	case "darwin":
-		// macOS can retain scoped duplicates for the same prefix. Removing only
-		// one left an old LAN-gateway host route competing with the utun /32.
-		routeDelAll(p)
 		args := darwinRouteArgs("add", p)
 		args = append(args, "-interface", dev)
 		return runQuiet("route", args...)
@@ -188,9 +240,12 @@ func routeAdd(p netip.Prefix, dev string) error {
 
 // routeVia adds a route through a gateway/dev (split-tunnel "direct" bypass).
 func routeVia(p netip.Prefix, gw netip.Addr, dev string) error {
+	if !gw.IsValid() && dev == "" {
+		return fmt.Errorf("wgengine: no physical path for route %s", p)
+	}
 	switch runtime.GOOS {
 	case "linux":
-		args := []string{"route", "replace", p.String()}
+		args := []string{"route", "add", p.String()}
 		if gw.IsValid() {
 			args = append(args, "via", gw.String())
 		}
@@ -199,7 +254,6 @@ func routeVia(p netip.Prefix, gw netip.Addr, dev string) error {
 		}
 		return ipCmd(args...)
 	case "darwin":
-		routeDelAll(p)
 		args := darwinRouteArgs("add", p)
 		if gw.IsValid() && gw.Is6() == p.Addr().Is6() {
 			return runQuiet("route", append(args, gw.String())...)
@@ -211,13 +265,204 @@ func routeVia(p netip.Prefix, gw netip.Addr, dev string) error {
 	return nil
 }
 
+// unixPhysicalDefaultPath resolves the policy-selected physical path when that
+// path does not use a tunnel. If an active EXIT makes the destination lookup
+// select RatelMesh's /1, Linux falls back to the physical main-table /0 instead
+// of creating a tunnel self-loop.
+func unixPhysicalDefaultPath(target netip.Addr, tunnelInterface string) (netip.Addr, string) {
+	switch runtime.GOOS {
+	case "linux":
+		family := "-4"
+		if target.Is6() {
+			family = "-6"
+		}
+		// Let the kernel resolve policy rules and ECMP first. While an EXIT is
+		// active this may select our split default, which is deliberately rejected
+		// below before falling back to the physical main-table /0.
+		if out, err := exec.Command("ip", family, "route", "get", target.String()).Output(); err == nil {
+			if gateway, device, ok := parseLinuxPhysicalRouteGet(string(out), tunnelInterface); ok {
+				return gateway, device
+			}
+		}
+		out, err := exec.Command("ip", family, "route", "show", "default").Output()
+		if err != nil {
+			return netip.Addr{}, ""
+		}
+		return parseLinuxDefaultRoute(string(out), tunnelInterface)
+	case "darwin":
+		args := []string{"-n", "get"}
+		if target.Is6() {
+			args = append(args, "-inet6")
+		}
+		args = append(args, "default")
+		out, err := exec.Command("route", args...).Output()
+		if err != nil {
+			return netip.Addr{}, ""
+		}
+		return parseDarwinDefaultRoute(string(out))
+	default:
+		return netip.Addr{}, ""
+	}
+}
+
+type linuxDefaultCandidate struct {
+	gateway netip.Addr
+	device  string
+	metric  uint64
+	order   int
+}
+
+func parseLinuxPhysicalRouteGet(output, tunnelInterface string) (netip.Addr, string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		gateway, device, ok := parseLinuxRoutePath(fields)
+		if !ok || device == tunnelInterface || linuxTunnelLikeInterface(device) {
+			return netip.Addr{}, "", false
+		}
+		return gateway, device, true
+	}
+	return netip.Addr{}, "", false
+}
+
+func parseLinuxDefaultRoute(output, tunnelInterface string) (netip.Addr, string) {
+	var candidates []linuxDefaultCandidate
+	var multipathMetric uint64
+	inMultipathDefault := false
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == "default" {
+			metric, ok := parseLinuxRouteMetric(fields)
+			if !ok {
+				inMultipathDefault = false
+				continue
+			}
+			multipathMetric = metric
+			inMultipathDefault = true
+			if gateway, device, ok := parseLinuxRoutePath(fields); ok {
+				candidates = appendLinuxDefaultCandidate(candidates, gateway, device, metric, tunnelInterface)
+			}
+			continue
+		}
+		if inMultipathDefault && fields[0] == "nexthop" {
+			if gateway, device, ok := parseLinuxRoutePath(fields); ok {
+				candidates = appendLinuxDefaultCandidate(candidates, gateway, device, multipathMetric, tunnelInterface)
+			}
+			continue
+		}
+		// The route-get path above resolves policy rules, classic ECMP, and modern
+		// nexthop objects. If an active EXIT hides that result and the /0 fallback
+		// contains only an unresolved "nhid", selecting a guessed member would be
+		// unsafe; leave the path unresolved instead.
+		inMultipathDefault = false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].metric != candidates[j].metric {
+			return candidates[i].metric < candidates[j].metric
+		}
+		return candidates[i].order < candidates[j].order
+	})
+	if len(candidates) > 0 {
+		return candidates[0].gateway, candidates[0].device
+	}
+	return netip.Addr{}, ""
+}
+
+func parseLinuxRouteMetric(fields []string) (uint64, bool) {
+	for i := 0; i < len(fields); i++ {
+		if fields[i] != "metric" {
+			continue
+		}
+		if i+1 >= len(fields) {
+			return 0, false
+		}
+		metric, err := strconv.ParseUint(fields[i+1], 10, 64)
+		return metric, err == nil
+	}
+	return 0, true
+}
+
+func parseLinuxRoutePath(fields []string) (netip.Addr, string, bool) {
+	var gateway netip.Addr
+	var device string
+	for i := 0; i < len(fields); i++ {
+		switch fields[i] {
+		case "via":
+			if i+1 >= len(fields) {
+				return netip.Addr{}, "", false
+			}
+			parsed, err := netip.ParseAddr(fields[i+1])
+			if err != nil {
+				return netip.Addr{}, "", false
+			}
+			gateway = parsed.Unmap()
+		case "dev":
+			if i+1 >= len(fields) || fields[i+1] == "" {
+				return netip.Addr{}, "", false
+			}
+			device = fields[i+1]
+		}
+	}
+	return gateway, device, gateway.IsValid() || device != ""
+}
+
+func appendLinuxDefaultCandidate(candidates []linuxDefaultCandidate, gateway netip.Addr, device string, metric uint64, tunnelInterface string) []linuxDefaultCandidate {
+	if device == tunnelInterface || linuxTunnelLikeInterface(device) ||
+		(!gateway.IsValid() && device == "") {
+		return candidates
+	}
+	return append(candidates, linuxDefaultCandidate{
+		gateway: gateway.Unmap(),
+		device:  device,
+		metric:  metric,
+		order:   len(candidates),
+	})
+}
+
+func linuxTunnelLikeInterface(device string) bool {
+	name := strings.ToLower(strings.TrimSpace(device))
+	for _, prefix := range []string{
+		"ratelmesh", "tailscale", "utun", "tun", "tap", "wg", "vpn", "zt",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseDarwinDefaultRoute(output string) (netip.Addr, string) {
+	var gateway netip.Addr
+	var device string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "gateway:":
+			gateway, _ = netip.ParseAddr(fields[1])
+		case "interface:":
+			device = fields[1]
+		}
+	}
+	if gateway.IsValid() || device != "" {
+		return gateway.Unmap(), device
+	}
+	return netip.Addr{}, ""
+}
+
 // routeBlackhole drops all traffic to a CIDR (split-tunnel "block").
 func routeBlackhole(p netip.Prefix) error {
 	switch runtime.GOOS {
 	case "linux":
-		return ipCmd("route", "replace", "blackhole", p.String())
+		return ipCmd("route", "add", "blackhole", p.String())
 	case "darwin":
-		routeDelAll(p)
 		args := darwinRouteArgs("add", p)
 		blackhole := "127.0.0.1"
 		if p.Addr().Is6() {
@@ -226,26 +471,6 @@ func routeBlackhole(p netip.Prefix) error {
 		return runQuiet("route", append(args, blackhole, "-blackhole")...)
 	}
 	return nil
-}
-
-func routeDelAny(p netip.Prefix) error {
-	switch runtime.GOOS {
-	case "linux":
-		return ipCmd("route", "del", p.String())
-	case "darwin":
-		return runQuiet("route", darwinRouteArgs("delete", p)...)
-	}
-	return nil
-}
-
-func routeDelAll(p netip.Prefix) {
-	// Bound the loop defensively; in practice macOS has at most a small number
-	// of scoped duplicates for an exact prefix.
-	for range 8 {
-		if routeDelAny(p) != nil {
-			return
-		}
-	}
 }
 
 // scrubStaleDefaultRoutes removes only split-default routes scoped to the
@@ -269,44 +494,337 @@ func darwinRouteOnInterfaceArgs(action string, prefix netip.Prefix, iface string
 	return append(darwinRouteArgs(action, prefix), "-interface", iface)
 }
 
-// pinEndpoint host-routes the exit's endpoint to its current physical path so
-// tunnel-to-exit packets don't loop back into the tunnel.
-func pinEndpoint(addr netip.Addr) error {
-	dev, via, ok := routeGet(addr)
-	if !ok {
-		return fmt.Errorf("wgengine: cannot resolve path to %s", addr)
+func routeDeleteNotFound(err error) bool {
+	if err == nil {
+		return false
 	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not in table") ||
+		strings.Contains(message, "rtnetlink answers: no such process") ||
+		strings.Contains(message, "route has not been found")
+}
+
+func deleteUnixManagedRoute(route unixManagedRoute) error {
 	switch runtime.GOOS {
 	case "linux":
-		args := []string{"route", "replace", netip.PrefixFrom(addr, addr.BitLen()).String()}
-		if via.IsValid() {
-			args = append(args, "via", via.String())
-		}
-		if dev != "" {
-			args = append(args, "dev", dev)
-		}
-		return ipCmd(args...)
+		return ipCmd(linuxManagedRouteDeleteArgs(route)...)
 	case "darwin":
-		_ = hostRouteDel(addr)
-		args := darwinHostRouteArgs("add", addr)
-		if via.IsValid() {
-			return runQuiet("route", append(args, via.String())...)
+		var args []string
+		if route.kind == unixRoutePin {
+			args = darwinHostRouteArgs("delete", route.prefix.Addr())
+		} else {
+			args = darwinRouteArgs("delete", route.prefix)
 		}
-		if dev != "" {
-			return runQuiet("route", append(args, "-interface", dev)...)
+		if route.kind == unixRouteBlackhole {
+			gateway := "127.0.0.1"
+			if route.prefix.Addr().Is6() {
+				gateway = "::1"
+			}
+			return runQuiet("route", append(args, gateway, "-blackhole")...)
 		}
+		if route.gateway.IsValid() {
+			return runQuiet("route", append(args, route.gateway.String())...)
+		}
+		if route.device != "" {
+			return runQuiet("route", append(args, "-interface", route.device)...)
+		}
+		return fmt.Errorf("wgengine: managed route %s has no deletion identity", route.prefix)
 	}
 	return nil
 }
 
-func hostRouteDel(addr netip.Addr) error {
-	switch runtime.GOOS {
-	case "linux":
-		return ipCmd("route", "del", netip.PrefixFrom(addr, addr.BitLen()).String())
-	case "darwin":
-		return runQuiet("route", darwinHostRouteArgs("delete", addr)...)
+func linuxManagedRouteDeleteArgs(route unixManagedRoute) []string {
+	args := []string{"route", "del"}
+	if route.kind == unixRouteBlackhole {
+		args = append(args, "blackhole")
 	}
-	return nil
+	args = append(args, route.prefix.String())
+	if route.gateway.IsValid() {
+		args = append(args, "via", route.gateway.String())
+	}
+	if route.device != "" {
+		args = append(args, "dev", route.device)
+	}
+	return args
+}
+
+func unixManagedRouteExists(route unixManagedRoute) (bool, error) {
+	if runtime.GOOS == "linux" {
+		out, err := exec.Command("ip", "route", "show", "exact", route.prefix.String()).CombinedOutput()
+		if err != nil {
+			return false, fmt.Errorf("ip route show exact %s: %w: %s", route.prefix, err, strings.TrimSpace(string(out)))
+		}
+		return linuxRouteOutputHasOwner(string(out), route), nil
+	}
+	if runtime.GOOS == "darwin" {
+		family := "inet"
+		if route.prefix.Addr().Is6() {
+			family = "inet6"
+		}
+		out, err := exec.Command("netstat", "-rn", "-f", family).CombinedOutput()
+		if err != nil {
+			return false, fmt.Errorf("netstat route table for managed %s: %w: %s", route.prefix, err, strings.TrimSpace(string(out)))
+		}
+		return darwinRouteTableHasOwner(string(out), route)
+	}
+	return false, nil
+}
+
+func linuxRouteOutputHasOwner(output string, route unixManagedRoute) bool {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		kindMatches := route.kind != unixRouteBlackhole || fields[0] == "blackhole"
+		deviceMatches := route.device == "" || fieldAfter(fields, "dev") == route.device
+		gatewayMatches := !route.gateway.IsValid() || fieldAfter(fields, "via") == route.gateway.String()
+		if kindMatches && deviceMatches && gatewayMatches {
+			return true
+		}
+	}
+	return false
+}
+
+func fieldAfter(fields []string, key string) string {
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] == key {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+func darwinRouteTableHasOwner(output string, route unixManagedRoute) (bool, error) {
+	headerSeen := false
+	parsedRows := 0
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if !headerSeen {
+			if len(fields) >= 4 &&
+				fields[0] == "Destination" &&
+				fields[1] == "Gateway" &&
+				fields[2] == "Flags" &&
+				fields[3] == "Netif" {
+				headerSeen = true
+			}
+			continue
+		}
+		if len(fields) < 4 {
+			return false, fmt.Errorf("wgengine: unrecognized macOS route-table row %q", line)
+		}
+		prefix, ok := parseDarwinNetstatPrefix(fields[0], route.prefix.Addr().BitLen())
+		if !ok {
+			return false, fmt.Errorf("wgengine: unrecognized macOS route destination %q", fields[0])
+		}
+		parsedRows++
+		if prefix != route.prefix.Masked() {
+			continue
+		}
+		gateway := strings.TrimSuffix(fields[1], "%"+zoneOf(fields[1]))
+		flags := fields[2]
+		device := fields[3]
+		if route.gateway.IsValid() {
+			got, err := netip.ParseAddr(gateway)
+			if err != nil || unzonedAddr(got) != unzonedAddr(route.gateway) {
+				continue
+			}
+		}
+		if route.device != "" && device != route.device {
+			continue
+		}
+		if route.kind == unixRouteBlackhole {
+			wantGateway := netip.MustParseAddr("127.0.0.1")
+			if route.prefix.Addr().Is6() {
+				wantGateway = netip.MustParseAddr("::1")
+			}
+			got, err := netip.ParseAddr(gateway)
+			if err != nil || got.Unmap() != wantGateway || !strings.Contains(flags, "B") {
+				continue
+			}
+		}
+		if route.kind != unixRouteBlackhole && strings.Contains(flags, "B") {
+			continue
+		}
+		return true, nil
+	}
+	if !headerSeen {
+		return false, fmt.Errorf("wgengine: macOS route-table header was not recognized")
+	}
+	if parsedRows == 0 {
+		return false, fmt.Errorf("wgengine: macOS route table contained no recognized routes")
+	}
+	return false, nil
+}
+
+func unzonedAddr(addr netip.Addr) netip.Addr {
+	addr = addr.Unmap()
+	if addr.Is6() {
+		return addr.WithZone("")
+	}
+	return addr
+}
+
+func parseDarwinNetstatPrefix(destination string, bitLen int) (netip.Prefix, bool) {
+	if destination == "default" {
+		if bitLen == 32 {
+			return netip.PrefixFrom(netip.IPv4Unspecified(), 0), true
+		}
+		if bitLen == 128 {
+			return netip.PrefixFrom(netip.IPv6Unspecified(), 0), true
+		}
+		return netip.Prefix{}, false
+	}
+	if percent := strings.IndexByte(destination, '%'); percent >= 0 {
+		if slash := strings.IndexByte(destination[percent:], '/'); slash >= 0 {
+			destination = destination[:percent] + destination[percent+slash:]
+		} else {
+			destination = destination[:percent]
+		}
+	}
+	if prefix, err := netip.ParsePrefix(destination); err == nil && prefix.Addr().BitLen() == bitLen {
+		return prefix.Masked(), true
+	}
+	if bitLen != 32 {
+		if addr, err := netip.ParseAddr(destination); err == nil && addr.Is6() {
+			return netip.PrefixFrom(addr, 128), true
+		}
+		return netip.Prefix{}, false
+	}
+
+	address, bitsText, hasBits := strings.Cut(destination, "/")
+	octets := strings.Split(address, ".")
+	if len(octets) == 0 || len(octets) > 4 {
+		return netip.Prefix{}, false
+	}
+	for len(octets) < 4 {
+		octets = append(octets, "0")
+	}
+	addr, err := netip.ParseAddr(strings.Join(octets, "."))
+	if err != nil || !addr.Is4() {
+		return netip.Prefix{}, false
+	}
+	bits := len(strings.Split(address, ".")) * 8
+	if hasBits {
+		bits, err = strconv.Atoi(bitsText)
+		if err != nil || bits < 0 || bits > 32 {
+			return netip.Prefix{}, false
+		}
+	}
+	return netip.PrefixFrom(addr, bits).Masked(), true
+}
+
+func darwinLookupHasRouteOwner(output string, route unixManagedRoute) bool {
+	var destination, mask, gateway, device, flags string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.TrimSuffix(fields[0], ":") {
+		case "destination":
+			destination = strings.TrimSuffix(fields[1], "%"+zoneOf(fields[1]))
+		case "mask":
+			mask = fields[1]
+		case "gateway":
+			gateway = strings.TrimSuffix(fields[1], "%"+zoneOf(fields[1]))
+		case "interface":
+			device = fields[1]
+		case "flags":
+			flags = strings.ToUpper(strings.Join(fields[1:], " "))
+		}
+	}
+	if !darwinDestinationMatchesPrefix(destination, mask, route.prefix) {
+		return false
+	}
+	if route.prefix.Bits() == route.prefix.Addr().BitLen() && !strings.Contains(flags, "HOST") {
+		return false
+	}
+	if route.gateway.IsValid() {
+		got, err := netip.ParseAddr(gateway)
+		if err != nil || got.Unmap() != route.gateway.Unmap() {
+			return false
+		}
+	}
+	if route.device != "" && device != route.device {
+		return false
+	}
+	if route.kind == unixRouteBlackhole && !strings.Contains(flags, "BLACKHOLE") {
+		return false
+	}
+	return true
+}
+
+func darwinDestinationMatchesPrefix(destination, mask string, want netip.Prefix) bool {
+	if parsed, err := netip.ParsePrefix(destination); err == nil {
+		return parsed.Masked() == want.Masked()
+	}
+	if destination == "default" {
+		return want.Bits() == 0
+	}
+	addr, err := netip.ParseAddr(destination)
+	if err != nil || addr.Unmap() != want.Addr().Unmap() {
+		return false
+	}
+	if want.Bits() == want.Addr().BitLen() {
+		return true
+	}
+	maskBits, ok := darwinMaskBits(mask, want.Addr().BitLen())
+	return ok && maskBits == want.Bits()
+}
+
+func darwinMaskBits(mask string, bitLen int) (int, bool) {
+	if bitLen == 32 && strings.HasPrefix(mask, "0x") {
+		value, err := strconv.ParseUint(strings.TrimPrefix(mask, "0x"), 16, 32)
+		if err != nil {
+			return 0, false
+		}
+		raw := uint32(value)
+		ones := bits.LeadingZeros32(^raw)
+		expected := uint32(0)
+		if ones > 0 {
+			expected = ^uint32(0) << (32 - ones)
+		}
+		return ones, raw == expected
+	}
+	addr, err := netip.ParseAddr(mask)
+	if err != nil || addr.BitLen() != bitLen {
+		return 0, false
+	}
+	raw := addr.AsSlice()
+	ones := 0
+	seenZero := false
+	for _, value := range raw {
+		for bit := 7; bit >= 0; bit-- {
+			set := value&(1<<bit) != 0
+			if seenZero && set {
+				return 0, false
+			}
+			if set {
+				ones++
+			} else {
+				seenZero = true
+			}
+		}
+	}
+	return ones, true
+}
+
+func darwinLookupHasExactHostRoute(output string, addr netip.Addr) bool {
+	return darwinLookupHasRouteOwner(output, unixManagedRoute{
+		prefix: netip.PrefixFrom(addr, addr.BitLen()),
+		kind:   unixRoutePin,
+	})
+}
+
+func zoneOf(addr string) string {
+	if _, zone, found := strings.Cut(addr, "%"); found {
+		return zone
+	}
+	return ""
 }
 
 func darwinRouteArgs(action string, prefix netip.Prefix) []string {
@@ -325,95 +843,31 @@ func darwinHostRouteArgs(action string, addr netip.Addr) []string {
 	return append(args, "-host", addr.String())
 }
 
-// routeGet returns how the kernel currently reaches addr: (dev, via, ok).
-func routeGet(addr netip.Addr) (dev string, via netip.Addr, ok bool) {
-	switch runtime.GOOS {
-	case "linux":
-		out, err := exec.Command("ip", "route", "get", addr.String()).Output()
-		if err != nil {
-			return "", netip.Addr{}, false
-		}
-		fields := strings.Fields(string(out))
-		for i := 0; i < len(fields)-1; i++ {
-			switch fields[i] {
-			case "via":
-				via, _ = netip.ParseAddr(fields[i+1])
-			case "dev":
-				dev = fields[i+1]
-			}
-		}
-		return dev, via, dev != ""
-	case "darwin":
-		args := []string{"-n", "get"}
-		if addr.Is6() {
-			args = append(args, "-inet6")
-		}
-		out, err := exec.Command("route", append(args, addr.String())...).Output()
-		if err != nil {
-			return "", netip.Addr{}, false
-		}
-		for _, line := range strings.Split(string(out), "\n") {
-			f := strings.Fields(line)
-			if len(f) < 2 {
-				continue
-			}
-			switch f[0] {
-			case "gateway:":
-				via, _ = netip.ParseAddr(f[1])
-			case "interface:":
-				dev = f[1]
-			}
-		}
-		return dev, via, dev != ""
-	case "windows":
-		// Find-NetRoute returns the winning route and interface after accounting
-		// for both route and interface metrics. Emit a deliberately tiny,
-		// locale-independent record for Go to parse.
-		script := fmt.Sprintf("$r = Find-NetRoute -RemoteIPAddress '%s' | Select-Object -First 1; if ($null -eq $r) { exit 1 }; Write-Output ($r.InterfaceIndex.ToString() + '|' + $r.NextHop)", addr.String())
-		out, err := exec.Command(windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-Command", script).Output()
-		if err != nil {
-			return "", netip.Addr{}, false
-		}
-		fields := strings.Split(strings.TrimSpace(string(out)), "|")
-		if len(fields) != 2 || fields[0] == "" {
-			return "", netip.Addr{}, false
-		}
-		via, _ = netip.ParseAddr(strings.TrimSpace(fields[1]))
-		return strings.TrimSpace(fields[0]), via, true
-	}
-	return "", netip.Addr{}, false
-}
-
-// routeDefaultPath returns the current default egress (gateway, dev).
-func routeDefaultPath() (netip.Addr, string) {
-	if runtime.GOOS == "windows" {
-		return windowsPhysicalDefaultPath()
-	}
-	dev, via, ok := routeGet(netip.MustParseAddr("1.1.1.1"))
-	if !ok {
-		return netip.Addr{}, ""
-	}
-	return via, dev
-}
-
-func windowsPhysicalDefaultPath() (netip.Addr, string) {
+func windowsPhysicalDefaultPathFor(ipv6 bool) (netip.Addr, string) {
 	if runtime.GOOS != "windows" {
 		return netip.Addr{}, ""
 	}
-	script := fmt.Sprintf(
-		"$r = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -ne '%s' } | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1; if ($null -eq $r) { exit 1 }; Write-Output ($r.InterfaceIndex.ToString() + '|' + $r.NextHop)",
-		WindowsTunnelName,
-	)
+	family, destination := "IPv4", "0.0.0.0/0"
+	if ipv6 {
+		family, destination = "IPv6", "::/0"
+	}
+	script := windowsPhysicalDefaultScript(family, destination)
 	out, err := exec.Command(windowsPowerShellPath, "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return netip.Addr{}, ""
 	}
-	fields := strings.Split(strings.TrimSpace(string(out)), "|")
-	if len(fields) != 2 || fields[0] == "" {
+	gateway, device, ok := selectWindowsPhysicalDefault(string(out))
+	if !ok {
 		return netip.Addr{}, ""
 	}
-	gateway, _ := netip.ParseAddr(strings.TrimSpace(fields[1]))
-	return gateway.Unmap(), strings.TrimSpace(fields[0])
+	return gateway, device
+}
+
+func windowsPhysicalDefaultScript(family, destination string) string {
+	return fmt.Sprintf(
+		"$routes = Get-NetRoute -AddressFamily %s -DestinationPrefix '%s' -ErrorAction Stop | Where-Object { $_.InterfaceAlias -ne '%s' }; foreach ($r in $routes) { $i = Get-NetIPInterface -AddressFamily %s -InterfaceIndex $r.InterfaceIndex -ErrorAction Stop | Select-Object -First 1; if ($null -ne $i) { Write-Output ($r.InterfaceIndex.ToString() + '|' + $r.NextHop + '|' + $r.RouteMetric.ToString() + '|' + $i.InterfaceMetric.ToString() + '|' + ([int]$i.ConnectionState).ToString()) } }",
+		family, destination, WindowsTunnelName, family,
+	)
 }
 
 // ipCmd runs `ip <args>` capturing output for real error messages.
@@ -461,7 +915,8 @@ func windowsCreateRoute(p netip.Prefix, gw netip.Addr, interfaceIndex string, bl
 	if interfaceIndex == "" {
 		return false, fmt.Errorf("wgengine: no Windows interface index for route %s", p)
 	}
-	if _, err := strconv.Atoi(interfaceIndex); err != nil {
+	index, err := strconv.ParseUint(interfaceIndex, 10, 64)
+	if err != nil || index == 0 {
 		return false, fmt.Errorf("wgengine: invalid Windows interface index %q", interfaceIndex)
 	}
 	nextHop := windowsRouteNextHop(p, gw)
@@ -471,7 +926,7 @@ func windowsCreateRoute(p netip.Prefix, gw netip.Addr, interfaceIndex string, bl
 		// on-link route through it reliably makes the destination unreachable.
 		metric = 0
 	}
-	script := fmt.Sprintf("$r = Get-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -eq '%s' } | Select-Object -First 1; if ($null -ne $r) { Write-Output 'existing'; exit 0 }; New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '%s' -RouteMetric %d -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; Write-Output 'created'", p.String(), interfaceIndex, nextHop, p.String(), interfaceIndex, nextHop, metric)
+	script := fmt.Sprintf("$r = Get-NetRoute -DestinationPrefix '%s' -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $r) { Write-Error 'route conflict'; exit 2 }; New-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -NextHop '%s' -RouteMetric %d -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; Write-Output 'created'", p.String(), p.String(), interfaceIndex, nextHop, metric)
 	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("powershell.exe create route %s: %w: %s", p, err, strings.TrimSpace(string(out)))
@@ -490,9 +945,17 @@ func windowsRouteNextHop(p netip.Prefix, gw netip.Addr) string {
 }
 
 func windowsRemoveExactRoute(route windowsManagedRoute) error {
-	if _, err := strconv.Atoi(route.interfaceIndex); err != nil {
+	index, err := strconv.ParseUint(route.interfaceIndex, 10, 64)
+	if err != nil || index == 0 {
 		return fmt.Errorf("wgengine: invalid Windows interface index %q", route.interfaceIndex)
 	}
-	script := fmt.Sprintf("Get-NetRoute -DestinationPrefix '%s' -InterfaceIndex %s -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object { $_.NextHop -eq '%s' } | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue", route.prefix.String(), route.interfaceIndex, route.nextHop)
+	// An empty exact query is idempotent success. Any matching route that fails
+	// removal must make PowerShell exit non-zero so the ownership ledger retains
+	// it for bounded retry instead of silently forgetting a permanent residual.
+	script := windowsRemoveExactRouteScript(route)
 	return runQuiet("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+}
+
+func windowsRemoveExactRouteScript(route windowsManagedRoute) string {
+	return fmt.Sprintf("$routes = @(Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop | Where-Object { $_.DestinationPrefix -eq '%s' -and $_.InterfaceIndex -eq %s -and $_.NextHop -eq '%s' }); if ($routes.Count -gt 0) { $routes | Remove-NetRoute -Confirm:$false -ErrorAction Stop }", route.prefix.String(), route.interfaceIndex, route.nextHop)
 }

@@ -66,6 +66,7 @@ func TestDetector_Detect(t *testing.T) {
 		t.Errorf("expected ErrNilPointer, got %v", err)
 	}
 
+	//lint:ignore SA1012 This deliberately verifies the public API fails closed on a nil context.
 	_, err = d.Detect(nil, PlatformMacOS, "n1", "100.64.0.1", nil)
 	if err != ErrNilPointer {
 		t.Errorf("expected ErrNilPointer for nil context, got %v", err)

@@ -132,6 +132,29 @@ func (c *Confirmer) Confirm(ctx context.Context, target Target) (ConfirmationTok
 }
 
 func (c *Confirmer) consume(target Target, token ConfirmationToken) error {
+	if err := c.validate(target, token); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(token[:])
+	now := c.clock.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	record, err := c.validateLocked(target, digest, now)
+	if err != nil {
+		return err
+	}
+	// Recheck under the mutation lock: another request may have consumed the
+	// same confirmation after the pre-lock validation.
+	record.state = confirmationConsumed
+	c.records[digest] = record
+	return nil
+}
+
+// validate rejects malformed, expired, replayed, or cross-target capabilities
+// without consuming them. EnsureRunning calls it before admission and target
+// locking so an unauthorised request cannot occupy scarce transaction slots,
+// then consume revalidates after the target lock is acquired.
+func (c *Confirmer) validate(target Target, token ConfirmationToken) error {
 	if token == (ConfirmationToken{}) {
 		return &Error{Code: CodeConfirmationInvalid}
 	}
@@ -139,24 +162,27 @@ func (c *Confirmer) consume(target Target, token ConfirmationToken) error {
 	now := c.clock.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_, err := c.validateLocked(target, digest, now)
+	return err
+}
+
+func (c *Confirmer) validateLocked(target Target, digest [sha256.Size]byte, now time.Time) (confirmationRecord, error) {
 	record, ok := c.records[digest]
 	if !ok {
 		c.pruneLocked(now)
-		return &Error{Code: CodeConfirmationInvalid}
+		return confirmationRecord{}, &Error{Code: CodeConfirmationInvalid}
 	}
 	if !now.Before(record.expires) {
 		delete(c.records, digest)
-		return &Error{Code: CodeConfirmationExpired}
+		return confirmationRecord{}, &Error{Code: CodeConfirmationExpired}
 	}
 	if record.state == confirmationConsumed {
-		return &Error{Code: CodeConfirmationReplay}
+		return confirmationRecord{}, &Error{Code: CodeConfirmationReplay}
 	}
 	if record.target != target {
-		return &Error{Code: CodeConfirmationInvalid}
+		return confirmationRecord{}, &Error{Code: CodeConfirmationInvalid}
 	}
-	record.state = confirmationConsumed
-	c.records[digest] = record
-	return nil
+	return record, nil
 }
 
 func (c *Confirmer) pruneLocked(now time.Time) {

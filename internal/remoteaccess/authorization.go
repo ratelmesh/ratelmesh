@@ -50,7 +50,11 @@ func AuthorizeSource(req SourceAuthorizationRequest) (*AuthorizedLaunch, error) 
 		return nil, enforcementError(CodeInvalidInput, ErrBindingMismatch)
 	}
 
-	policy, err := VerifyPolicyState(req.SignedPolicy, req.Verifier, req.Self.TenantID, req.Now)
+	trustedNow, err := PolicyTimeFloor(req.PolicyStore, req.Self.TenantID, req.Now)
+	if err != nil {
+		return nil, enforcementError(CodeStorage, err)
+	}
+	policy, err := VerifyPolicyState(req.SignedPolicy, req.Verifier, req.Self.TenantID, trustedNow)
 	if err != nil {
 		return nil, enforcementError(classifyGrantError(err), err)
 	}
@@ -58,6 +62,11 @@ func AuthorizeSource(req SourceAuthorizationRequest) (*AuthorizedLaunch, error) 
 	if err != nil {
 		return nil, enforcementError(CodeStorage, err)
 	}
+	policy, err = ObservePolicyAt(policy, current, exists, req.Now)
+	if err != nil {
+		return nil, enforcementError(CodeStorage, err)
+	}
+	trustedNow = policy.ObservedAt
 	if err := checkPolicyAdvance(current, exists, policy); err != nil {
 		code := CodePolicyStale
 		if errors.Is(err, ErrPolicyConflict) {
@@ -73,7 +82,7 @@ func AuthorizeSource(req SourceAuthorizationRequest) (*AuthorizedLaunch, error) 
 	}
 
 	ctx := VerificationContext{
-		Now:                   req.Now,
+		Now:                   trustedNow,
 		TenantID:              req.Self.TenantID,
 		GranteeID:             req.Self.NodeID,
 		ExpectedGranteeMeshIP: req.Self.MeshIP,

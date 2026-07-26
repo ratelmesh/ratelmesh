@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/shan25519/ratelmesh/internal/daemon"
-	"github.com/shan25519/ratelmesh/internal/sign"
+	"github.com/ratelmesh/ratelmesh/internal/daemon"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/sign"
 )
 
 // App is the handle the mobile app holds for the lifetime of the VPN session.
@@ -29,6 +31,7 @@ type App struct {
 	done     chan struct{}
 	stopping bool
 	lastErr  string
+	doctor   *daemon.NetworkDoctor
 }
 
 type appOptions struct {
@@ -134,7 +137,7 @@ func newApp(opts appOptions) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{d: d, engine: engine}, nil
+	return &App{d: d, engine: engine, doctor: d.NetworkDoctor()}, nil
 }
 
 // PublicKey returns this device's WireGuard public key (base64).
@@ -242,4 +245,38 @@ func (a *App) SetSystemLocation(latitude, longitude float64) error {
 func (a *App) Resolve(name string) string {
 	ip, _ := a.d.Resolve(name)
 	return ip
+}
+
+// DoctorDisclosureVersion returns the consent revision native UI must show
+// before active probes or a repair.
+func (a *App) DoctorDisclosureVersion() string {
+	return daemon.DoctorDisclosureVersion()
+}
+
+// RunNetworkDoctor returns a stable, redacted JSON envelope containing the
+// report, repair plan, and an opaque short-lived planID.
+func (a *App) RunNetworkDoctor(disclosureVersion string, confirmed bool) (string, error) {
+	if a == nil || a.doctor == nil {
+		return "", daemon.ErrDoctorInvalidRequest
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return a.doctor.RunJSON(ctx, confirmed, disclosureVersion)
+}
+
+// ApplyNetworkDoctorRepair consumes a one-use planID after native UI explicitly
+// confirms the selected action. The returned JSON contains only stable,
+// redacted execution and rollback status.
+func (a *App) ApplyNetworkDoctorRepair(
+	planID, action, disclosureVersion string,
+	confirmed bool,
+) (string, error) {
+	if a == nil || a.doctor == nil {
+		return "", daemon.ErrDoctorInvalidRequest
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return a.doctor.RepairJSON(
+		ctx, planID, diagnose.RepairActionID(action), confirmed, disclosureVersion,
+	)
 }

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/daemon"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/daemon"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 // TestGUIServesControlPanel verifies ratelmeshd serves the self-contained web GUI and
@@ -76,7 +76,7 @@ func TestGUIServesControlPanel(t *testing.T) {
 		"DOCTOR_DISCLOSURE_VERSION='v1'",
 		"storageSet('ratelmeshdoctorconsent',DOCTOR_DISCLOSURE_VERSION)",
 		"body:JSON.stringify({confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})",
-		"body:JSON.stringify({action:action,confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})",
+		"body:JSON.stringify({planID:planID,action:action,confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})",
 		"function storageGet(key){try{return localStorage.getItem(key);}catch(e){return null;}}",
 		"function storageSet(key,value){try{localStorage.setItem(key,value);return true;}catch(e){return false;}}",
 	} {

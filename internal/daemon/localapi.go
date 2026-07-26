@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/remoteservice"
+	"github.com/ratelmesh/ratelmesh/internal/remoteservice"
 )
 
 // LocalAPI is ratelmeshd's loopback control surface, served over a unix socket that
@@ -28,9 +28,6 @@ type LocalAPI struct {
 	remoteManager   *remoteservice.Manager
 	remoteConfirmer *remoteservice.Confirmer
 	remoteErr       error
-	doctorRunOnce   sync.Once
-	doctorRun       chan struct{}
-	doctorRepairMu  sync.Mutex
 }
 
 // NewLocalAPI creates the local API bound to socket path.

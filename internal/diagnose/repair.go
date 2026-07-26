@@ -10,7 +10,7 @@ import (
 // This file defines the declarative, allowlisted repair model. A repair is data,
 // never code: an allowlisted operation to apply, the state to snapshot first,
 // the preconditions to verify, and the explicit rollback steps to undo it. This
-// package plans and orchestrates repairs but executes nothing privileged; Wade
+// package plans and orchestrates repairs but executes nothing privileged; the daemon
 // injects the privileged Executor later (see repair_exec.go).
 
 // RepairOp is an allowlisted repair operation. The executor understands a fixed,
@@ -769,7 +769,11 @@ type preconditionWire struct {
 // MarshalJSON renders the plan and passes it through the redactor as a final
 // scrub, matching the report's no-raw-secrets guarantee.
 func (p RepairPlan) MarshalJSON() ([]byte, error) {
-	w := planWire{Schema: planSchema, DryRun: p.DryRun}
+	w := planWire{
+		Schema:  planSchema,
+		DryRun:  p.DryRun,
+		Repairs: make([]plannedWire, 0, len(p.Repairs)),
+	}
 	for _, r := range p.Repairs {
 		pw := plannedWire{
 			Action:         r.Action,

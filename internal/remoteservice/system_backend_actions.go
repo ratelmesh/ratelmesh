@@ -430,14 +430,3 @@ func windowsServiceName(service fixedService) string {
 	}
 	return "TermService"
 }
-
-func servicePort(service fixedService) uint16 {
-	switch service {
-	case fixedLinuxSSH, fixedLinuxSSHD, fixedMacSSH, fixedWindowsSSH:
-		return 22
-	case fixedWindowsRDP:
-		return 3389
-	default:
-		return 0
-	}
-}

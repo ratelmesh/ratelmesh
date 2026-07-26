@@ -15,11 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/pop"
-	"github.com/shan25519/ratelmesh/internal/pqcrypto"
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/pop"
+	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
+
+const maxSessionTokenBytes = 1024
 
 // Client talks to a single coord server.
 type Client struct {
@@ -118,7 +120,7 @@ func (c *Client) Register(ctx context.Context, req types.RegisterRequest) (*type
 	req.AuthKey = c.authKey
 	req.SessionToken = c.Token()
 
-	coordPub, nonce, err := c.coordKey(ctx)
+	coordPub, nonce, proofVersion, err := c.coordKey(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch coord key: %w", err)
 	}
@@ -131,9 +133,14 @@ func (c *Client) Register(ctx context.Context, req types.RegisterRequest) (*type
 	}
 	req.ProofTime = time.Now().Unix()
 	req.ProofNonce = nonce
+	req.ProofVersion = proofVersion
 	proofContext := pop.Context(req.ProofTime, priv.Public(), string(req.Role), req.AdvertiseRoutes)
 	if nonce != "" {
-		proofContext = pop.ChallengeContext(req.ProofTime, nonce, priv.Public(), string(req.Role), req.AdvertiseRoutes, req.Endpoints, req.DiscoEndpoints, req.PQKEMPublicKey, req.PQSigningPublicKey)
+		if proofVersion >= 2 {
+			proofContext = pop.ChallengeContextV2(req.ProofTime, nonce, priv.Public(), string(req.Role), req.AdvertiseRoutes, req.Endpoints, req.DiscoEndpoints, req.MachineIdentity, req.PQKEMPublicKey, req.PQSigningPublicKey)
+		} else {
+			proofContext = pop.ChallengeContext(req.ProofTime, nonce, priv.Public(), string(req.Role), req.AdvertiseRoutes, req.Endpoints, req.DiscoEndpoints, req.PQKEMPublicKey, req.PQSigningPublicKey)
+		}
 	}
 	proof, err := pop.Prove(priv, coordPub, proofContext)
 	if err != nil {
@@ -145,6 +152,12 @@ func (c *Client) Register(ctx context.Context, req types.RegisterRequest) (*type
 	if err := c.post(ctx, "/v1/register", req, &resp); err != nil {
 		return nil, err
 	}
+	if err := c.validateNetmapBinding(resp.NodeID, resp.Netmap); err != nil {
+		return nil, fmt.Errorf("register response identity: %w", err)
+	}
+	if err := validateSessionToken(resp.SessionToken); err != nil {
+		return nil, fmt.Errorf("register response token: %w", err)
+	}
 	if resp.SessionToken != "" {
 		c.SetToken(resp.SessionToken)
 	}
@@ -152,36 +165,36 @@ func (c *Client) Register(ctx context.Context, req types.RegisterRequest) (*type
 }
 
 // coordKey fetches the coord's X25519 public key and a fresh one-shot challenge.
-func (c *Client) coordKey(ctx context.Context) ([32]byte, string, error) {
+func (c *Client) coordKey(ctx context.Context) ([32]byte, string, int, error) {
 	ctx, done := c.requestContext(ctx)
 	defer done()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/coordkey", nil)
 	if err != nil {
-		return [32]byte{}, "", err
+		return [32]byte{}, "", 0, err
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return [32]byte{}, "", err
+		return [32]byte{}, "", 0, err
 	}
 	defer resp.Body.Close()
 	data, err := readLimitedResponse(resp.Body)
 	if err != nil {
-		return [32]byte{}, "", err
+		return [32]byte{}, "", 0, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return [32]byte{}, "", fmt.Errorf("coord /v1/coordkey: status %d", resp.StatusCode)
+		return [32]byte{}, "", 0, fmt.Errorf("coord /v1/coordkey: status %d", resp.StatusCode)
 	}
 	var kr types.CoordKeyResponse
 	if err := json.Unmarshal(data, &kr); err != nil {
-		return [32]byte{}, "", err
+		return [32]byte{}, "", 0, err
 	}
 	raw, err := base64.StdEncoding.DecodeString(kr.PublicKey)
 	if err != nil || len(raw) != 32 {
-		return [32]byte{}, "", fmt.Errorf("bad coord key")
+		return [32]byte{}, "", 0, fmt.Errorf("bad coord key")
 	}
 	var pub [32]byte
 	copy(pub[:], raw)
-	return pub, kr.Nonce, nil
+	return pub, kr.Nonce, kr.ProofVersion, nil
 }
 
 // Poll performs one long-poll for netmap changes since knownVersion.
@@ -210,7 +223,6 @@ func (c *Client) PollWithRuntimeAndServices(ctx context.Context, nodeID string, 
 	c.mu.Unlock()
 	req := types.PollRequest{
 		NodeID:          nodeID,
-		AuthKey:         c.authKey,
 		KnownVersion:    knownVersion,
 		Endpoints:       endpoints,
 		DiscoEndpoints:  discoEndpoints,
@@ -226,22 +238,56 @@ func (c *Client) PollWithRuntimeAndServices(ctx context.Context, nodeID string, 
 	if err := c.post(ctx, "/v1/poll", req, &resp); err != nil {
 		return nil, err
 	}
+	if resp.Changed {
+		if err := c.validateNetmapBinding(nodeID, resp.Netmap); err != nil {
+			return nil, fmt.Errorf("poll response identity: %w", err)
+		}
+	}
+	if err := validateSessionToken(resp.SessionToken); err != nil {
+		return nil, fmt.Errorf("poll response token: %w", err)
+	}
 	if resp.SessionToken != "" {
 		c.SetToken(resp.SessionToken) // token refreshed by the coord (§3)
 	}
 	return &resp, nil
 }
 
+func (c *Client) validateNetmapBinding(nodeID string, nm types.Netmap) error {
+	if nodeID == "" || nm.Self.ID != nodeID {
+		return fmt.Errorf("netmap self ID %q does not match node ID %q", nm.Self.ID, nodeID)
+	}
+	c.mu.Lock()
+	priv := c.nodePriv
+	c.mu.Unlock()
+	if priv == (types.Key{}) {
+		return fmt.Errorf("device identity key is not configured")
+	}
+	if nm.Self.Key != priv.Public() {
+		return fmt.Errorf("netmap self key does not match device identity")
+	}
+	if nm.Version == 0 {
+		return fmt.Errorf("netmap version is zero")
+	}
+	return nil
+}
+
+func validateSessionToken(token string) error {
+	if len(token) > maxSessionTokenBytes {
+		return fmt.Errorf("session token exceeds %d bytes", maxSessionTokenBytes)
+	}
+	return nil
+}
+
 // PublishPQSession sends an ML-KEM ciphertext and its device ML-DSA signature
 // to the coordinator. The coordinator can route and persist it but cannot derive
 // the resulting WireGuard PSK.
-func (c *Client) PublishPQSession(ctx context.Context, nodeID, peerID string, ciphertext, signature []byte) error {
+func (c *Client) PublishPQSession(ctx context.Context, nodeID, peerID string, epoch uint64, ciphertext, signature []byte) error {
 	c.mu.Lock()
 	machineIdentity := c.machineIdentity
 	c.mu.Unlock()
 	req := types.PQSessionRequest{
 		NodeID: nodeID, PeerID: peerID, SessionToken: c.Token(),
-		MachineIdentity: machineIdentity, Ciphertext: ciphertext, Signature: signature,
+		MachineIdentity: machineIdentity, Epoch: epoch, Ciphertext: ciphertext, Signature: signature,
 	}
 	return c.post(ctx, "/v1/pqsession", req, nil)
 }

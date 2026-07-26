@@ -28,6 +28,6 @@
 // operations to apply, the state to snapshot first, the preconditions to verify
 // and the explicit rollback steps to undo it. Plan performs a read-only dry run
 // (evaluating preconditions, applying nothing); Execute later drives the plan
-// through an injected Executor that Wade wires to the privileged primitives,
+// through an injected Executor that the daemon wires to privileged primitives,
 // with snapshot-capture-before-apply and automatic rollback on failure.
 package diagnose

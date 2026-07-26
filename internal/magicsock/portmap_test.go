@@ -124,7 +124,11 @@ func TestUPnPMapUDP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapping, err := mapUPnPLocation(context.Background(), location, netip.MustParseAddr("192.168.1.10"), 51820, 2*time.Hour)
+	gateway, err := netip.ParseAddr(location.Hostname())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping, err := mapUPnPLocation(context.Background(), location, gateway, netip.MustParseAddr("192.168.1.10"), 51820, 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,5 +139,68 @@ func TestUPnPMapUDP(t *testing.T) {
 	defer mu.Unlock()
 	if len(actions) != 2 || !strings.Contains(actions[0], "GetExternalIPAddress") || !strings.Contains(actions[1], "AddPortMapping") {
 		t.Fatalf("SOAP actions = %v", actions)
+	}
+}
+
+func TestUPnPRejectsCrossHostDescriptionAndControlURLs(t *testing.T) {
+	gateway := netip.MustParseAddr("192.168.1.1")
+	for _, raw := range []string{
+		"http://127.0.0.1:8080/root.xml",
+		"http://192.168.1.22:8080/root.xml",
+		"http://10.0.0.1:8080/root.xml",
+	} {
+		location, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if safeUPnPURLForHost(location, gateway) {
+			t.Fatalf("accepted UPnP URL %q for gateway %s", raw, gateway)
+		}
+	}
+	location, err := url.Parse("http://192.168.1.1:5431/root.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !safeUPnPURLForHost(location, gateway) {
+		t.Fatalf("rejected same-gateway UPnP URL %q", location)
+	}
+}
+
+func TestSSDPResponseMustComeFromGatewayWithExpectedStatusAndTarget(t *testing.T) {
+	gateway := netip.MustParseAddr("192.168.1.1")
+	fromGateway := net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.168.1.1:1900"))
+	valid := "HTTP/1.1 200 OK\r\n" +
+		"ST: " + upnpSearchTarget + "\r\n" +
+		"LOCATION: http://192.168.1.1:5431/root.xml\r\n\r\n"
+	if !validSSDPResponse(valid, fromGateway, gateway) {
+		t.Fatal("rejected valid gateway SSDP response")
+	}
+	cases := []struct {
+		name     string
+		response string
+		from     *net.UDPAddr
+	}{
+		{
+			name:     "wrong source",
+			response: valid,
+			from:     net.UDPAddrFromAddrPort(netip.MustParseAddrPort("192.168.1.22:1900")),
+		},
+		{
+			name:     "non-success status",
+			response: strings.Replace(valid, "200 OK", "404 Not Found", 1),
+			from:     fromGateway,
+		},
+		{
+			name:     "unexpected search target",
+			response: strings.Replace(valid, upnpSearchTarget, "upnp:rootdevice", 1),
+			from:     fromGateway,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if validSSDPResponse(tc.response, tc.from, gateway) {
+				t.Fatalf("accepted invalid SSDP response: %q", tc.response)
+			}
+		})
 	}
 }

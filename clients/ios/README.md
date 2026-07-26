@@ -58,14 +58,17 @@ the simulator does not grant a production Packet Tunnel entitlement.
 
 `Shared/PrivacyInfo.xcprivacy` is embedded in both the app and Packet Tunnel
 targets. It declares App Group `UserDefaults` access, device identity and the
-user-supplied device name for app functionality, with tracking disabled. Keep
-it aligned with App Store Connect privacy answers when data handling changes.
+user-supplied device name, plus the coarse location region derived on-device
+for app functionality, with tracking disabled. Keep it aligned with App Store
+Connect privacy answers when data handling changes.
 
 ## Runtime and security notes
 
 - The auth key and coordinator configuration use a shared Keychain item marked
   `AfterFirstUnlockThisDeviceOnly`; they are neither synced nor placed in
   `UserDefaults`.
+- The App Group identity state directory is excluded from device backup and
+  transfer. A restored device must create and enroll a fresh identity.
 - Production coordinators must use HTTPS. Plain HTTP is accepted only for
   localhost development.
 - `directRoutes` are subtracted from WireGuard allowed IPs. `blockRoutes` are
@@ -89,5 +92,7 @@ Once the Apple team and provisioning profiles exist, create a signed archive:
 export RATELMESH_DEVELOPMENT_TEAM=ABCDE12345
 # Optional: also export an IPA using your App Store export options plist.
 export RATELMESH_EXPORT_OPTIONS_PLIST=/secure/path/ExportOptions.plist
-Scripts/archive.sh
+Scripts/archive.sh 0.2.39 239
+# Equivalent repository-root shortcut:
+# make release-ios VERSION=0.2.39 BUILD=239
 ```

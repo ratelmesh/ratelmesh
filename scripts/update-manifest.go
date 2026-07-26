@@ -101,10 +101,12 @@ func keygen(args []string) error {
 	if *keyPath == "" {
 		return errors.New("-key is required")
 	}
-	if _, err := os.Lstat(*keyPath); err == nil {
-		return fmt.Errorf("release key already exists: %s", *keyPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	for _, path := range []string{*keyPath, *keyPath + ".mldsa65"} {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("release key already exists: %s", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(*keyPath), 0o700); err != nil {
 		return err
@@ -113,23 +115,12 @@ func keygen(args []string) error {
 	if err != nil {
 		return err
 	}
-	seed := base64.StdEncoding.EncodeToString(privateKey.Seed()) + "\n"
-	file, err := os.OpenFile(*keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := file.WriteString(seed); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(*keyPath, 0o600); err != nil {
-		return err
-	}
 	_, pqPrivate, err := mldsa65.GenerateKey(rand.Reader)
 	if err != nil {
+		return err
+	}
+	seed := base64.StdEncoding.EncodeToString(privateKey.Seed()) + "\n"
+	if err := writeExclusiveFile(*keyPath, []byte(seed), 0o600); err != nil {
 		return err
 	}
 	if err := writeMLDSASeed(*keyPath+".mldsa65", pqPrivate); err != nil {
@@ -202,7 +193,7 @@ func sign(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(*output, data, 0o644)
+	return writeExclusiveFile(*output, data, 0o644)
 }
 
 func writeMLDSASeed(path string, privateKey *mldsa65.PrivateKey) error {
@@ -210,26 +201,53 @@ func writeMLDSASeed(path string, privateKey *mldsa65.PrivateKey) error {
 	if len(seed) != mldsa65.SeedSize {
 		return errors.New("ML-DSA key has no seed")
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	return writeExclusiveFile(path, []byte(base64.StdEncoding.EncodeToString(seed)+"\n"), 0o600)
+}
+
+func writeExclusiveFile(path string, data []byte, mode os.FileMode) error {
+	directoryPath := filepath.Dir(path)
+	file, err := os.CreateTemp(directoryPath, "."+filepath.Base(path)+".stage-*")
 	if err != nil {
 		return err
 	}
-	if _, err := file.WriteString(base64.StdEncoding.EncodeToString(seed) + "\n"); err != nil {
-		file.Close()
+	stagedPath := file.Name()
+	defer func() {
+		_ = os.Remove(stagedPath)
+	}()
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
 		return err
 	}
-	return file.Close()
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(stagedPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	if err := directory.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func loadMLDSAPrivateKey(path string) (*mldsa65.PrivateKey, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("ML-DSA release key must be a regular file with mode 0600")
-	}
-	data, err := os.ReadFile(path)
+	data, err := loadPrivateFile(path, "ML-DSA release key", os.Open)
 	if err != nil {
 		return nil, err
 	}
@@ -244,14 +262,7 @@ func loadMLDSAPrivateKey(path string) (*mldsa65.PrivateKey, error) {
 }
 
 func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("release key must be a regular file with mode 0600")
-	}
-	seedText, err := os.ReadFile(path)
+	seedText, err := loadPrivateFile(path, "release key", os.Open)
 	if err != nil {
 		return nil, err
 	}
@@ -260,6 +271,37 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 		return nil, errors.New("invalid release key")
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+func loadPrivateFile(path, label string, openFile func(string) (*os.File, error)) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%s must be a regular file with mode 0600", label)
+	}
+	file, err := openFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !after.Mode().IsRegular() || after.Mode().Perm()&0o077 != 0 ||
+		!os.SameFile(before, after) {
+		return nil, fmt.Errorf("%s changed while it was being opened", label)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 1<<20+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 1<<20 {
+		return nil, fmt.Errorf("%s is too large", label)
+	}
+	return data, nil
 }
 
 func canonical(m manifest) []byte {
@@ -277,15 +319,39 @@ func canonical(m manifest) []byte {
 }
 
 func hashFile(path string) (string, int64, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if !before.Mode().IsRegular() {
+		return "", 0, errors.New("package must be a regular non-symbolic-link file")
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}
 	defer file.Close()
-	hash := sha256.New()
-	size, err := io.Copy(hash, file)
+	opened, err := file.Stat()
 	if err != nil {
 		return "", 0, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return "", 0, errors.New("package changed while it was being opened")
+	}
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(file, 1_000_000_001))
+	if err != nil {
+		return "", 0, err
+	}
+	if size > 1_000_000_000 {
+		return "", 0, errors.New("package exceeds 1 GB")
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return "", 0, errors.New("package changed while it was being hashed")
 	}
 	return hex.EncodeToString(hash.Sum(nil)), size, nil
 }

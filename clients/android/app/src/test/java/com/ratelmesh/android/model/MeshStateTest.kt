@@ -52,4 +52,14 @@ class MeshStateTest {
         assertTrue(state.peers.single().remoteAccessAllowed)
         assertEquals(listOf(RemoteService("rdp", 3389, "100.64.0.8")), state.peers.single().remoteServices)
     }
+
+    @Test
+    fun remoteAccessServiceCannotRetargetAnotherAddress() {
+        val state = parseStatus(
+            """{"state":"Running","self":{"meshIP":"100.64.0.2"},"peers":[{"name":"office","meshIP":"100.64.0.8","role":"plain","online":true,"pathType":"direct","platform":"windows","remoteAccessAllowed":true,"remoteServices":[{"kind":"rdp","port":3389,"targetMeshIp":"100.64.0.99"}]}]}""",
+            MeshState(),
+        )
+
+        assertTrue(state.peers.single().authorizedRemoteServices.isEmpty())
+    }
 }

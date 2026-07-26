@@ -30,19 +30,9 @@ struct ClientConfiguration: Codable, Equatable, Sendable {
     }
 }
 
-enum ConfigurationError: LocalizedError {
+enum ConfigurationError: Error {
     case invalidCoordinatorURL
     case insecureCoordinatorURL
     case missingAuthKey
     case invalidHostname
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidCoordinatorURL: "协调器地址无效。"
-        case .insecureCoordinatorURL: "协调器必须使用 HTTPS；仅本机开发地址允许 HTTP。"
-        case .missingAuthKey: "请输入授权密钥。"
-        case .invalidHostname: "设备名只能包含字母、数字和连字符，最长 63 个字符。"
-        }
-    }
 }
-

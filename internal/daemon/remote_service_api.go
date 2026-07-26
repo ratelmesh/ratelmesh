@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/shan25519/ratelmesh/internal/remoteservice"
+	"github.com/ratelmesh/ratelmesh/internal/remoteservice"
 )
 
 const maxRemoteServiceRequest = 4 << 10

@@ -20,7 +20,7 @@ func TestCoordKeyRejectsNonSuccessResponse(t *testing.T) {
 	defer ts.Close()
 
 	c := NewClient(ts.URL+"/", "")
-	if _, _, err := c.coordKey(t.Context()); err == nil || !strings.Contains(err.Error(), "status 503") {
+	if _, _, _, err := c.coordKey(t.Context()); err == nil || !strings.Contains(err.Error(), "status 503") {
 		t.Fatalf("coordKey error = %v, want status failure", err)
 	}
 }
@@ -36,7 +36,7 @@ func TestResetNetworkCancelsInflightRequest(t *testing.T) {
 	c := NewClient(ts.URL, "")
 	result := make(chan error, 1)
 	go func() {
-		_, _, err := c.coordKey(context.Background())
+		_, _, _, err := c.coordKey(context.Background())
 		result <- err
 	}()
 	select {
@@ -66,7 +66,7 @@ func TestCoordKeyAcceptsTrailingSlashBaseURL(t *testing.T) {
 	defer ts.Close()
 
 	c := NewClient(ts.URL+"/", "")
-	if _, _, err := c.coordKey(t.Context()); err != nil {
+	if _, _, _, err := c.coordKey(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -79,7 +79,7 @@ func TestCoordKeyAcceptsLegacyCoordinatorWithoutNonce(t *testing.T) {
 	defer ts.Close()
 
 	c := NewClient(ts.URL, "")
-	if _, nonce, err := c.coordKey(t.Context()); err != nil || nonce != "" {
+	if _, nonce, version, err := c.coordKey(t.Context()); err != nil || nonce != "" || version != 0 {
 		t.Fatalf("legacy coord key nonce=%q err=%v", nonce, err)
 	}
 }

@@ -4,9 +4,9 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/sign"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/sign"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 func TestTamperedSignedAllowedIPsAreDropped(t *testing.T) {

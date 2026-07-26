@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">동의하고 계속</string>
     <string name="vpn_disclosure_decline">나중에</string>
     <string name="error_android_closed_vpn">Android가 VPN 터널을 종료했습니다</string>
+    <string name="error_connection_failed">연결할 수 없습니다. 네트워크와 설정을 확인한 후 다시 시도하세요.</string>
     <string name="error_coordinator_required">코디네이터 URL이 필요합니다</string>
     <string name="error_device_required">기기 이름이 필요합니다</string>
     <string name="error_state_directory">보호된 상태 디렉터리를 만들 수 없습니다</string>

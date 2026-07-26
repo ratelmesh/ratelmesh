@@ -42,12 +42,16 @@ enum ProductLanguage: String, CaseIterable, Identifiable {
         let fallback = self == .chinese || self == .traditionalChinese || (self == .system && systemChinese) ? chineseFallback : english
         if self == .english { return english }
         if self == .system {
-            return Bundle.main.localizedString(forKey: english, value: fallback, table: nil)
+            let localized = Bundle.main.localizedString(forKey: english, value: english, table: nil)
+            if localized != english { return localized }
+            return Bundle.main.localizedString(forKey: english, value: fallback, table: "NetworkDoctor")
         }
         let tag = self == .chinese ? "zh-Hans" : rawValue
         guard let path = Bundle.main.path(forResource: tag, ofType: "lproj"),
               let bundle = Bundle(path: path) else { return fallback }
-        return bundle.localizedString(forKey: english, value: fallback, table: nil)
+        let localized = bundle.localizedString(forKey: english, value: english, table: nil)
+        if localized != english { return localized }
+        return bundle.localizedString(forKey: english, value: fallback, table: "NetworkDoctor")
     }
 }
 

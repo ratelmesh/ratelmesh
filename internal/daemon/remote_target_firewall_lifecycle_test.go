@@ -3,20 +3,23 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/netguard"
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/netguard"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 type lifecycleEventLog struct {
@@ -51,6 +54,7 @@ type lifecycleEnforcer struct {
 	applied   chan lifecycleApplyResult
 	cleared   chan struct{}
 	events    *lifecycleEventLog
+	clearErr  error
 }
 
 func newLifecycleEnforcer(events *lifecycleEventLog) *lifecycleEnforcer {
@@ -94,6 +98,9 @@ func (e *lifecycleEnforcer) Apply(policy netguard.Policy) error {
 }
 
 func (e *lifecycleEnforcer) Clear() error {
+	if e.clearErr != nil {
+		return e.clearErr
+	}
 	e.mu.Lock()
 	e.current = netguard.Policy{}
 	e.mu.Unlock()
@@ -135,11 +142,13 @@ func (e *lifecycleEnforcer) blockNextApply(release <-chan struct{}) {
 type lifecycleEngine struct {
 	*wgengine.StubEngine
 
-	mu     sync.Mutex
-	name   string
-	up     chan struct{}
-	events *lifecycleEventLog
-	upOnce sync.Once
+	mu                   sync.Mutex
+	name                 string
+	up                   chan struct{}
+	events               *lifecycleEventLog
+	upOnce               sync.Once
+	downErr              error
+	requireCleanupIntent string
 }
 
 func newLifecycleEngine(name string, events *lifecycleEventLog) *lifecycleEngine {
@@ -152,6 +161,11 @@ func newLifecycleEngine(name string, events *lifecycleEventLog) *lifecycleEngine
 }
 
 func (e *lifecycleEngine) Up() error {
+	if e.requireCleanupIntent != "" {
+		if _, err := os.Stat(e.requireCleanupIntent); err != nil {
+			return fmt.Errorf("cleanup intent missing before Up: %w", err)
+		}
+	}
 	if err := e.StubEngine.Up(); err != nil {
 		return err
 	}
@@ -159,11 +173,26 @@ func (e *lifecycleEngine) Up() error {
 	return nil
 }
 
+func TestRunPersistsCleanupIntentBeforeEngineUp(t *testing.T) {
+	fixture := liveRemoteTargetFixture(t, time.Now().Add(time.Minute))
+	engine := newLifecycleEngine("ratelmesh-test0", nil)
+	d := newLifecycleDaemon(t, fixture, "http://127.0.0.1:1", engine, newLifecycleEnforcer(nil))
+	engine.requireCleanupIntent = filepath.Join(d.cfg.StateDir, cleanupFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = d.Run(ctx)
+	// Up itself verifies the ordering. A shutdown then clears the marker.
+}
+
 func (e *lifecycleEngine) Down() error {
 	if e.events != nil {
 		e.events.add("down")
 	}
-	return e.StubEngine.Down()
+	if err := e.StubEngine.Down(); err != nil {
+		return err
+	}
+	return e.downErr
 }
 
 func (e *lifecycleEngine) InterfaceName() string {
@@ -403,6 +432,66 @@ func TestRunJoinsRemoteExpiryWorkerBeforeEngineDownAndFirewallClear(t *testing.T
 	}
 	if got, want := events.snapshot(), []string{"apply", "down", "clear"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("shutdown order = %v, want %v", got, want)
+	}
+}
+
+func TestRunReportsIncompleteEngineCleanup(t *testing.T) {
+	fixture := liveRemoteTargetFixture(t, time.Now().Add(time.Minute))
+	cleanupErr := errors.New("route cleanup failed")
+	events := &lifecycleEventLog{}
+	engine := newLifecycleEngine("ratelmesh-test0", events)
+	engine.downErr = cleanupErr
+	guard := newLifecycleEnforcer(events)
+
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	d := newLifecycleDaemon(t, fixture, server.URL, engine, guard)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- d.Run(ctx) }()
+	receiveLifecycle(t, engine.up, time.Second, "daemon engine startup")
+	cancel()
+
+	err := receiveLifecycle(t, runDone, 2*time.Second, "daemon shutdown")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("Run error = %v, want context cancellation joined with cleanup failure", err)
+	}
+	if !d.Status().CleanupPending {
+		t.Fatal("cleanup failure was not exposed in daemon status")
+	}
+	if got, want := events.snapshot(), []string{"down"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("shutdown events = %v, want %v (firewall must remain fail-closed)", got, want)
+	}
+}
+
+func TestRunReportsIncompleteFirewallCleanup(t *testing.T) {
+	fixture := liveRemoteTargetFixture(t, time.Now().Add(time.Minute))
+	cleanupErr := errors.New("firewall cleanup failed")
+	engine := newLifecycleEngine("ratelmesh-test0", nil)
+	guard := newLifecycleEnforcer(nil)
+	guard.clearErr = cleanupErr
+
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	d := newLifecycleDaemon(t, fixture, server.URL, engine, guard)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- d.Run(ctx) }()
+	receiveLifecycle(t, engine.up, time.Second, "daemon engine startup")
+	cancel()
+
+	err := receiveLifecycle(t, runDone, 2*time.Second, "daemon shutdown")
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("Run error = %v, want context cancellation joined with firewall cleanup failure", err)
+	}
+	if !d.Status().CleanupPending {
+		t.Fatal("firewall cleanup failure was not exposed in daemon status")
 	}
 }
 

@@ -3,8 +3,10 @@ package wgengine
 import (
 	"net/netip"
 	"slices"
+	"strconv"
+	"strings"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // WindowsTunnelName is the WireGuard for Windows adapter name, derived by the
@@ -17,6 +19,8 @@ const WindowsTunnelName = "ratelmesh0"
 // semantics can be tested on the normal developer and CI hosts.
 type windowsRoutePlan struct {
 	hasDefault bool
+	default4   bool
+	default6   bool
 	direct     []netip.Prefix
 	block      []netip.Prefix
 	// pins are the default-route peers' endpoint IPs. They must be host-routed
@@ -27,10 +31,60 @@ type windowsRoutePlan struct {
 	pins []netip.Addr
 }
 
-type windowsManagedRoute struct {
-	prefix         netip.Prefix
-	interfaceIndex string
-	nextHop        string
+type windowsDefaultCandidate struct {
+	interfaceIndex  uint64
+	nextHop         netip.Addr
+	routeMetric     uint64
+	interfaceMetric uint64
+}
+
+func selectWindowsPhysicalDefault(output string) (netip.Addr, string, bool) {
+	var best windowsDefaultCandidate
+	found := false
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Split(strings.TrimSpace(line), "|")
+		if len(fields) != 5 || strings.TrimSpace(fields[4]) != "1" {
+			continue
+		}
+		index, indexErr := strconv.ParseUint(strings.TrimSpace(fields[0]), 10, 64)
+		nextHop, addrErr := netip.ParseAddr(strings.TrimSpace(fields[1]))
+		routeMetric, routeErr := strconv.ParseUint(strings.TrimSpace(fields[2]), 10, 64)
+		interfaceMetric, interfaceErr := strconv.ParseUint(strings.TrimSpace(fields[3]), 10, 64)
+		if indexErr != nil || addrErr != nil || routeErr != nil || interfaceErr != nil || index == 0 {
+			continue
+		}
+		candidate := windowsDefaultCandidate{
+			interfaceIndex:  index,
+			nextHop:         nextHop.Unmap(),
+			routeMetric:     routeMetric,
+			interfaceMetric: interfaceMetric,
+		}
+		if !found || windowsDefaultLess(candidate, best) {
+			best, found = candidate, true
+		}
+	}
+	if !found {
+		return netip.Addr{}, "", false
+	}
+	return best.nextHop, strconv.FormatUint(best.interfaceIndex, 10), true
+}
+
+func windowsDefaultLess(left, right windowsDefaultCandidate) bool {
+	leftCost := left.routeMetric + left.interfaceMetric
+	if leftCost < left.routeMetric {
+		leftCost = ^uint64(0)
+	}
+	rightCost := right.routeMetric + right.interfaceMetric
+	if rightCost < right.routeMetric {
+		rightCost = ^uint64(0)
+	}
+	if leftCost != rightCost {
+		return leftCost < rightCost
+	}
+	if left.interfaceIndex != right.interfaceIndex {
+		return left.interfaceIndex < right.interfaceIndex
+	}
+	return left.nextHop.Less(right.nextHop)
 }
 
 func planWindowsRoutes(cfg Config) windowsRoutePlan {
@@ -44,27 +98,45 @@ func planWindowsRoutes(cfg Config) windowsRoutePlan {
 		}
 	}
 	for _, peer := range cfg.Peers {
-		peerDefault := false
+		peerDefault4, peerDefault6 := false, false
 		for _, allowed := range peer.AllowedIPs {
-			if allowed.Addr().Is4() && allowed.Bits() == 0 {
-				plan.hasDefault = true
-				peerDefault = true
-				break
+			if allowed.Bits() != 0 {
+				continue
+			}
+			if allowed.Addr().Is4() {
+				peerDefault4 = true
+				plan.default4 = true
+			} else {
+				peerDefault6 = true
+				plan.default6 = true
 			}
 		}
-		if !peerDefault || len(peer.Endpoints) == 0 {
+		if !peerDefault4 && !peerDefault6 {
 			continue
 		}
-		if ap, err := netip.ParseAddrPort(peer.Endpoints[0]); err == nil {
-			addPin(ap.Addr())
+		plan.hasDefault = true
+		if ap, err := netip.ParseAddrPort(FirstRenderableEndpoint(peer.Endpoints)); err == nil {
+			if ap.Addr().Is4() && peerDefault4 || ap.Addr().Is6() && peerDefault6 {
+				addPin(ap.Addr())
+			}
 		}
 	}
 	if plan.hasDefault {
 		for _, addr := range cfg.PhysicalEndpoints {
-			addPin(addr)
+			if addr.Is4() && plan.default4 || addr.Is6() && plan.default6 {
+				addPin(addr)
+			}
 		}
-		plan.direct = append(plan.direct, cfg.DirectRoutes...)
-		plan.block = append(plan.block, cfg.BlockRoutes...)
+		for _, prefix := range cfg.DirectRoutes {
+			if prefix.Addr().Is4() && plan.default4 || prefix.Addr().Is6() && plan.default6 {
+				plan.direct = append(plan.direct, prefix)
+			}
+		}
+		for _, prefix := range cfg.BlockRoutes {
+			if prefix.Addr().Is4() && plan.default4 || prefix.Addr().Is6() && plan.default6 {
+				plan.block = append(plan.block, prefix)
+			}
+		}
 	}
 	return plan
 }
@@ -150,13 +222,4 @@ func windowsSyncconfSufficient(prev, next Config) bool {
 		}
 	}
 	return true
-}
-
-func peerHasDefaultRoute(peer Peer) bool {
-	for _, allowed := range peer.AllowedIPs {
-		if allowed.Bits() == 0 {
-			return true
-		}
-	}
-	return false
 }

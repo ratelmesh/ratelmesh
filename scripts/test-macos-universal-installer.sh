@@ -30,7 +30,16 @@ test -f "$WORK/package/Payload/usr/local/ratelmesh/share/licenses/wireguard-tool
 TOOLS_SOURCE="$WORK/package/Payload/usr/local/ratelmesh/share/sources/wireguard-tools-$RATELMESH_WIREGUARD_TOOLS_VERSION.tar.xz"
 test "$(shasum -a 256 "$TOOLS_SOURCE" | awk '{print $1}')" = "$RATELMESH_WIREGUARD_TOOLS_SHA256"
 APP_INFO="$WORK/package/Payload/usr/local/ratelmesh/share/RatelMesh.app/Contents/Info.plist"
+CANONICAL_INFO="$ROOT/clients/macos-menubar/Info.plist"
+EXPECTED_BUILD=$(plutil -extract CFBundleVersion raw -o - "$CANONICAL_INFO")
+case "$EXPECTED_BUILD" in
+    ''|0|0*|*[!0-9]*)
+        echo "canonical CFBundleVersion is not a monotonic positive integer" >&2
+        exit 1
+        ;;
+esac
 test "$(plutil -extract CFBundleShortVersionString raw -o - "$APP_INFO")" = "$VERSION"
+test "$(plutil -extract CFBundleVersion raw -o - "$APP_INFO")" = "$EXPECTED_BUILD"
 test "$(plutil -extract CFBundleIconFile raw -o - "$APP_INFO")" = "RatelMesh"
 test -s "$WORK/package/Payload/usr/local/ratelmesh/share/RatelMesh.app/Contents/Resources/RatelMesh.icns"
 test -s "$WORK/package/Payload/usr/local/ratelmesh/share/RatelMesh.app/Contents/Resources/BrandMarkDark.png"
@@ -151,6 +160,39 @@ test "$(cat "$LEGACY/var/lib/ratelmesh/device.json")" = preserved-device-state
 test ! -e "$LEGACY_STATE"
 test ! -e "$LEGACY/Library/LaunchDaemons/$LEGACY_LABEL.plist"
 test -f "$LEGACY/Library/LaunchDaemons/com.ratelmesh.daemon.plist"
+
+# Crash-recovery cleanup consumes the daemon's exact route-owner ledger. It
+# includes gateway/interface identity in every delete and never issues the old
+# prefix-only /1 commands that could remove another VPN's routes.
+ROUTE_ROOT="$WORK/route-cleanup"
+ROUTE_LOG="$WORK/route-cleanup.log"
+ROUTE_STUB="$WORK/route-stub"
+mkdir -p "$ROUTE_ROOT/var/lib/ratelmesh"
+printf '%s\n' '#!/bin/sh' \
+    'printf "%s\n" "$*" >>"$RATELMESH_ROUTE_TEST_LOG"' >"$ROUTE_STUB"
+chmod 755 "$ROUTE_STUB"
+printf '%s\n' \
+    '{"version":1,"routes":[' \
+    '{"prefix":"0.0.0.0/1","device":"utun9","kind":0},' \
+    '{"prefix":"203.0.113.9/32","gateway":"192.0.2.1","device":"en0","kind":1},' \
+    '{"prefix":"2001:db8::/64","kind":2},' \
+    '{"prefix":"2001:db8::8/128","gateway":"fe80::1%en0","device":"en0","kind":3}' \
+    ']}' >"$ROUTE_ROOT/var/lib/ratelmesh/route-owners-v1.json"
+RATELMESH_INSTALL_ROOT="$ROUTE_ROOT" RATELMESH_UNINSTALL_ROUTE_TEST_MODE=1 \
+    RATELMESH_UNINSTALL_ROUTE_COMMAND="$ROUTE_STUB" RATELMESH_ROUTE_TEST_LOG="$ROUTE_LOG" \
+    "$WORK/package/Payload/usr/local/ratelmesh/bin/ratelmesh-uninstall"
+printf '%s\n' \
+    '-n delete -net 0.0.0.0/1 -interface utun9' \
+    '-n delete -net 203.0.113.9/32 192.0.2.1' \
+    '-n delete -inet6 -net 2001:db8::/64 ::1 -blackhole' \
+    '-n delete -inet6 -host 2001:db8::8 fe80::1%en0' \
+    >"$WORK/route-cleanup.expected"
+cmp "$WORK/route-cleanup.expected" "$ROUTE_LOG"
+test ! -e "$ROUTE_ROOT/var/lib/ratelmesh/route-owners-v1.json"
+if rg -q -- 'delete -net (0\.0\.0\.0/1|128\.0\.0\.0/1)$' "$ROUTE_LOG"; then
+    echo "uninstaller issued a prefix-only split-default delete" >&2
+    exit 1
+fi
 
 # The uninstaller is root-prefix aware in test mode: it removes RatelMesh state and
 # both app locations without touching the real host running this test.

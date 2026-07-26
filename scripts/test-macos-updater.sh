@@ -17,12 +17,19 @@ done
 for script in \
     "$ROOT/packaging/macos/installer/scripts/postinstall" \
     "$ROOT/packaging/macos/update/scripts/postinstall"; do
+    grep -Eq '^set -[a-z]*e' "$script"
     rg -q 'previous RatelMesh daemon did not stop' "$script"
     rg -q 'daemon did not reach Running state after update' "$script"
     if rg -q 'launchctl load -w' "$script"; then
         echo "macOS updater must not hide bootstrap failure behind legacy launchctl load: $script" >&2
         exit 1
     fi
+done
+
+for script in \
+    "$ROOT/packaging/macos/update/scripts/preinstall" \
+    "$ROOT/packaging/macos/update/scripts/postinstall"; do
+    grep -Eq '^set -[a-z]*e' "$script"
 done
 
 for arch in arm64 x86_64; do
@@ -66,6 +73,20 @@ go run "$ROOT/scripts/update-manifest.go" sign \
     -url https://download.ratelmesh.com/download/RatelMesh-macOS-0.1.27-universal.pkg \
     -published-at 2026-07-13T08:00:00Z \
     -output "$WORK/latest.json"
+go run "$ROOT/scripts/update-manifest.go" sign \
+    -key "$WORK/release.key" \
+    -package "$WORK/update.pkg" \
+    -version 0.1.29 \
+    -url https://download.ratelmesh.com/download/RatelMesh-macOS-0.1.29-universal.pkg \
+    -published-at 2026-07-13T08:00:00Z \
+    -output "$WORK/high.json"
+go run "$ROOT/scripts/update-manifest.go" sign \
+    -key "$WORK/release.key" \
+    -package "$WORK/update.pkg" \
+    -version 0.1.28 \
+    -url https://download.ratelmesh.com/download/RatelMesh-macOS-0.1.28-universal.pkg \
+    -published-at 2026-07-13T08:00:00Z \
+    -output "$WORK/emergency.json"
 go build -o "$WORK/ratelmesh-pqverify" "$ROOT/cmd/ratelmesh-pqverify"
 
 xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
@@ -78,4 +99,6 @@ xcrun swiftc -O -parse-as-library -target "$(uname -m)-apple-macos13.0" \
     -o "$WORK/updater-scheduler-tests" \
     "$ROOT/clients/macos-menubar/UpdateSupport.swift" \
     "$ROOT/clients/macos-menubar/UpdateSchedulerTests.swift"
-"$WORK/updater-scheduler-tests" "$WORK/latest.json" "$PUBLIC_KEY" "$PQ_PUBLIC_KEY" "$WORK/ratelmesh-pqverify"
+"$WORK/updater-scheduler-tests" \
+    "$WORK/latest.json" "$PUBLIC_KEY" "$PQ_PUBLIC_KEY" "$WORK/ratelmesh-pqverify" \
+    "$WORK/high.json" "$WORK/emergency.json" "$WORK/update.pkg"

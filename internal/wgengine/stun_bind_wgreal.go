@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/magicsock"
+	"github.com/ratelmesh/ratelmesh/internal/magicsock"
 	"golang.zx2c4.com/wireguard/conn"
 )
 

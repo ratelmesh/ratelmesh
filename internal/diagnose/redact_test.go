@@ -135,13 +135,19 @@ func TestRedactorPatterns(t *testing.T) {
 			name:       "unix home path",
 			in:         "log at /Users/example/Library/rm/state.json today",
 			mustAbsent: []string{"/Users/example/"},
-			mustHave:   []string{"/Users/[redacted:user:", "/Library/rm/state.json"},
+			mustHave:   []string{"[redacted:path:"},
 		},
 		{
 			name:       "windows home path",
 			in:         `file C:\Users\example\AppData\rm.log`,
 			mustAbsent: []string{`C:\Users\example\`},
-			mustHave:   []string{"[redacted:user:"},
+			mustHave:   []string{"[redacted:path:"},
+		},
+		{
+			name:       "generic absolute paths",
+			in:         `unix /var/lib/ratelmesh/private/state.db windows D:\RatelMesh\private\state.db`,
+			mustAbsent: []string{"/var/lib/ratelmesh/private/state.db", `D:\RatelMesh\private\state.db`},
+			mustHave:   []string{"[redacted:path:"},
 		},
 		{
 			name:       "wireguard key",

@@ -1,12 +1,31 @@
 package daemon
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
+
+func TestCleanupPendingJSONCompatibility(t *testing.T) {
+	clean, err := json.Marshal(Status{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(clean, []byte("cleanupPending")) {
+		t.Fatalf("clean status unexpectedly emitted cleanupPending: %s", clean)
+	}
+	pending, err := json.Marshal(Status{CleanupPending: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(pending, []byte(`"cleanupPending":true`)) {
+		t.Fatalf("pending status omitted cleanupPending: %s", pending)
+	}
+}
 
 func TestExitClientStatusDistinguishesSelectedActiveAndOffline(t *testing.T) {
 	now := time.Now()

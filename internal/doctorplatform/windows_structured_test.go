@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
 )
 
 func TestParseWindowsStructuredRoutesIsLocaleIndependent(t *testing.T) {

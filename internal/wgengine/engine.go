@@ -10,8 +10,13 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
+
+// pathSafeTunnelMTU is IPv6's guaranteed minimum link MTU. Keeping the inner
+// tunnel at this size avoids silent HTTPS/QUIC blackholes when WireGuard is
+// nested inside relay/TLS, cross-border, hotspot, or other low-MTU paths.
+const pathSafeTunnelMTU = 1280
 
 // PublicEndpointDiscoverer discovers the NAT mapping of the exact UDP socket
 // used by WireGuard. Implementations must not use a separate ephemeral socket:
@@ -71,6 +76,12 @@ type DataPlaneRecoverer interface {
 // EADDRNOTAVAIL.
 type NetworkPathRecoverer interface {
 	RecoverNetworkPath() error
+}
+
+// PersistentCleanupPreparer lets a production engine reconcile only
+// previously recorded route owners before it mutates the network again.
+type PersistentCleanupPreparer interface {
+	PreparePersistentCleanup(stateDir string) error
 }
 
 // ExitHandshakeGater marks a production engine that must not receive default

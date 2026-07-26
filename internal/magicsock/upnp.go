@@ -17,6 +17,7 @@ import (
 )
 
 const upnpMaxBody = 1 << 20
+const upnpSearchTarget = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
 
 type upnpService struct {
 	ServiceType string `xml:"serviceType"`
@@ -32,17 +33,17 @@ type upnpRoot struct {
 	Device upnpDevice `xml:"device"`
 }
 
-func mapUPnP(ctx context.Context, local netip.Addr, internalPort uint16, lifetime time.Duration) (PortMapping, error) {
-	if !local.Is4() {
+func mapUPnP(ctx context.Context, gateway, local netip.Addr, internalPort uint16, lifetime time.Duration) (PortMapping, error) {
+	if !gateway.Is4() || !local.Is4() {
 		return PortMapping{}, errors.New("magicsock: UPnP discovery requires IPv4")
 	}
-	locations, err := discoverUPnP(ctx, local)
+	locations, err := discoverUPnP(ctx, gateway, local)
 	if err != nil {
 		return PortMapping{}, err
 	}
 	var lastErr error
 	for _, location := range locations {
-		mapping, err := mapUPnPLocation(ctx, location, local, internalPort, lifetime)
+		mapping, err := mapUPnPLocation(ctx, location, gateway, local, internalPort, lifetime)
 		if err == nil {
 			return mapping, nil
 		}
@@ -54,7 +55,7 @@ func mapUPnP(ctx context.Context, local netip.Addr, internalPort uint16, lifetim
 	return PortMapping{}, fmt.Errorf("magicsock: UPnP mapping: %w", lastErr)
 }
 
-func discoverUPnP(ctx context.Context, local netip.Addr) ([]*url.URL, error) {
+func discoverUPnP(ctx context.Context, gateway, local netip.Addr) ([]*url.URL, error) {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IP(local.AsSlice())})
 	if err != nil {
 		return nil, err
@@ -65,7 +66,7 @@ func discoverUPnP(ctx context.Context, local netip.Addr) ([]*url.URL, error) {
 		"HOST: 239.255.255.250:1900",
 		`MAN: "ssdp:discover"`,
 		"MX: 1",
-		"ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+		"ST: " + upnpSearchTarget,
 		"", "",
 	}, "\r\n")
 	target := &net.UDPAddr{IP: net.IPv4(239, 255, 255, 250), Port: 1900}
@@ -81,13 +82,21 @@ func discoverUPnP(ctx context.Context, local netip.Addr) ([]*url.URL, error) {
 	var locations []*url.URL
 	buf := make([]byte, 64<<10)
 	for len(locations) < 8 {
-		n, _, err := conn.ReadFromUDP(buf)
+		n, from, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			break
 		}
-		location := ssdpHeader(string(buf[:n]), "location")
+		response := string(buf[:n])
+		if !validSSDPResponse(response, from, gateway) {
+			continue
+		}
+		location := ssdpHeader(response, "location")
 		parsed, err := url.Parse(strings.TrimSpace(location))
-		if err != nil || !safeUPnPURL(parsed) || seen[parsed.String()] {
+		// SSDP is unauthenticated. Only the default gateway is entitled to make
+		// the privileged daemon issue HTTP/SOAP requests; otherwise any LAN host
+		// could advertise an arbitrary private or loopback URL and turn discovery
+		// into an SSRF primitive.
+		if err != nil || !safeUPnPURLForHost(parsed, gateway) || seen[parsed.String()] {
 			continue
 		}
 		seen[parsed.String()] = true
@@ -97,6 +106,23 @@ func discoverUPnP(ctx context.Context, local netip.Addr) ([]*url.URL, error) {
 		return nil, errors.New("magicsock: no UPnP IGD discovered")
 	}
 	return locations, nil
+}
+
+func validSSDPResponse(response string, from *net.UDPAddr, gateway netip.Addr) bool {
+	if from == nil || !gateway.IsValid() || from.AddrPort().Addr().Unmap() != gateway.Unmap() {
+		return false
+	}
+	lines := strings.Split(response, "\r\n")
+	if len(lines) == 0 {
+		return false
+	}
+	status := strings.Fields(lines[0])
+	if len(status) < 3 ||
+		(status[0] != "HTTP/1.1" && status[0] != "HTTP/1.0") ||
+		status[1] != "200" {
+		return false
+	}
+	return ssdpHeader(response, "st") == upnpSearchTarget
 }
 
 func ssdpHeader(response, name string) string {
@@ -117,11 +143,22 @@ func safeUPnPURL(value *url.URL) bool {
 	return err == nil && (host.IsPrivate() || host.IsLinkLocalUnicast() || host.IsLoopback())
 }
 
-func mapUPnPLocation(ctx context.Context, location *url.URL, local netip.Addr, internalPort uint16, lifetime time.Duration) (PortMapping, error) {
+func safeUPnPURLForHost(value *url.URL, expected netip.Addr) bool {
+	if !safeUPnPURL(value) || !expected.IsValid() {
+		return false
+	}
+	host, err := netip.ParseAddr(value.Hostname())
+	return err == nil && host.Unmap() == expected.Unmap()
+}
+
+func mapUPnPLocation(ctx context.Context, location *url.URL, gateway, local netip.Addr, internalPort uint16, lifetime time.Duration) (PortMapping, error) {
+	if !safeUPnPURLForHost(location, gateway) {
+		return PortMapping{}, errors.New("unsafe UPnP description URL")
+	}
 	client := &http.Client{
 		Timeout: 2 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 || !safeUPnPURL(req.URL) {
+			if len(via) >= 3 || !safeUPnPURLForHost(req.URL, gateway) {
 				return errors.New("unsafe UPnP redirect")
 			}
 			return nil
@@ -148,7 +185,7 @@ func mapUPnPLocation(ctx context.Context, location *url.URL, local netip.Addr, i
 		return PortMapping{}, errors.New("WANIPConnection/WANPPPConnection service missing")
 	}
 	control, err := location.Parse(service.ControlURL)
-	if err != nil || !safeUPnPURL(control) {
+	if err != nil || !safeUPnPURLForHost(control, gateway) {
 		return PortMapping{}, errors.New("unsafe UPnP control URL")
 	}
 	externalText, err := upnpSOAP(ctx, client, control, service.ServiceType, "GetExternalIPAddress", "")

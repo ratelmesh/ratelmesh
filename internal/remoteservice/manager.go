@@ -100,7 +100,7 @@ func (m *Manager) EnsureRunning(ctx context.Context, request Request) (Result, e
 		return Result{}, err
 	}
 	defer m.releaseAdmission()
-	if err := m.confirmer.consume(request.Target, request.Confirmation); err != nil {
+	if err := m.confirmer.validate(request.Target, request.Confirmation); err != nil {
 		return Result{}, err
 	}
 
@@ -113,6 +113,13 @@ func (m *Manager) EnsureRunning(ctx context.Context, request Request) (Result, e
 		<-lock.held
 		m.unreferenceLock(request.Target, lock)
 	}()
+	// Consume only after this request owns the target transaction lock. A
+	// confirmation is authority for an imminent local mutation, not a queue
+	// ticket: consuming before an unbounded lock wait could let an operation
+	// start after the capability's expiry.
+	if err := m.confirmer.consume(request.Target, request.Confirmation); err != nil {
+		return Result{}, err
+	}
 
 	preState, err := captureWithTimeout(ctx, m.config.CaptureTimeout, m.backend, request.Target)
 	if err != nil {

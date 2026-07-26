@@ -84,3 +84,9 @@
 "RatelMesh v%@ was downloaded and verified. Open the system installer now?" = "RatelMesh v%@ 다운로드 및 검증이 완료되었습니다. 지금 시스템 설치 프로그램을 여시겠습니까?";
 "Install now" = "지금 설치";
 "Later" = "나중에";
+"Enter a valid one-use code in the form ratelmesh-xxxx-xxxx-xxxx." = "ratelmesh-xxxx-xxxx-xxxx 형식의 유효한 일회용 코드를 입력하세요.";
+"Administrator authorization was cancelled. Approve it to finish setup." = "관리자 승인이 취소되었습니다. 설정을 마치려면 승인하세요.";
+"The secure setup helper is unavailable. Reinstall RatelMesh or contact your administrator." = "보안 설정 도우미를 사용할 수 없습니다. RatelMesh를 다시 설치하거나 관리자에게 문의하세요.";
+"The one-use code was rejected or expired. Request a new code and try again." = "일회용 코드가 거부되었거나 만료되었습니다. 새 코드를 요청한 후 다시 시도하세요.";
+"Enrollment did not complete. Check your connection and try again." = "등록을 완료하지 못했습니다. 연결을 확인한 후 다시 시도하세요.";
+"Unavailable" = "사용할 수 없음";

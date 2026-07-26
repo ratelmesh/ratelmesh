@@ -4,8 +4,8 @@ import (
 	"net"
 	"net/url"
 
-	"github.com/shan25519/ratelmesh/internal/control"
-	"github.com/shan25519/ratelmesh/internal/transport"
+	"github.com/ratelmesh/ratelmesh/internal/control"
+	"github.com/ratelmesh/ratelmesh/internal/transport"
 )
 
 // newCoordClient builds the control-plane client for cfg.

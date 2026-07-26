@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func TestAuthenticateRemoteAccessNetmapRequiresExactSignedGrant(t *testing.T) {

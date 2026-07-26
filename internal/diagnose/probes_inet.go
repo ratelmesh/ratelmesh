@@ -37,7 +37,7 @@ func (dnsProbe) Run(ctx context.Context, env *Env) ProbeResult {
 		}
 		res.add(newFinding(ProbeDNS, code,
 			fmt.Sprintf("resolving %q failed", name),
-			map[string]string{"query": name, "error": err.Error()}))
+			map[string]string{"query": name, "error_class": safeErrorClass(err)}))
 		return res
 	}
 	if len(addrs) == 0 {
@@ -147,7 +147,7 @@ func runFamily(ctx context.Context, env *Env, fam AddressFamily, network, target
 	if err != nil {
 		res.add(newFinding(id, unreachable,
 			fmt.Sprintf("could not establish an IPv%d connection to the reachability target", int(fam)),
-			map[string]string{"target": target, "error": err.Error()}))
+			map[string]string{"target": target, "error_class": safeErrorClass(err)}))
 		return res
 	}
 	_ = conn.Close()

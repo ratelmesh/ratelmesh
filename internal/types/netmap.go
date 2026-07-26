@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
 )
 
 // NodeRole distinguishes the kinds of node in a mesh. A plain node only routes
@@ -81,11 +81,14 @@ type Node struct {
 	// separate from Sig so upgraded coordinators remain compatible with older
 	// clients while upgraded clients reject route-tampered netmaps.
 	RouteSig []byte `json:"routeSig,omitempty"`
+	// CapabilitySig binds the server-authoritative Exit and Relay grants without
+	// changing the legacy identity or route signature transcripts.
+	CapabilitySig []byte `json:"capabilitySig,omitempty"`
 	// PQSig/PQRouteSig are ML-DSA-65 counterparts to the Ed25519 credentials.
-	// Strict clients require both signatures, preserving classical security while
-	// adding post-quantum authentication.
-	PQSig      []byte `json:"pqSig,omitempty"`
-	PQRouteSig []byte `json:"pqRouteSig,omitempty"`
+	// Strict clients require the corresponding PQ capability credential too.
+	PQSig           []byte `json:"pqSig,omitempty"`
+	PQRouteSig      []byte `json:"pqRouteSig,omitempty"`
+	PQCapabilitySig []byte `json:"pqCapabilitySig,omitempty"`
 }
 
 // Netmap is the view of the mesh delivered to a single node: itself plus the
@@ -122,6 +125,7 @@ type Netmap struct {
 type PQSession struct {
 	InitiatorID string `json:"initiatorID"`
 	RecipientID string `json:"recipientID"`
+	Epoch       uint64 `json:"epoch"`
 	Ciphertext  []byte `json:"ciphertext"`
 	Signature   []byte `json:"signature"`
 }

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func TestMLKEMSessionProducesSameWireGuardPSK(t *testing.T) {
@@ -20,11 +20,12 @@ func TestMLKEMSessionProducesSameWireGuardPSK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig, err := initiator.SignSession("a", "b", ciphertext)
+	const epoch = 7
+	sig, err := initiator.SignSession("a", "b", epoch, ciphertext)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !VerifySession(initiator.MLDSAPublicKey(), "a", "b", ciphertext, sig) {
+	if !VerifySession(initiator.MLDSAPublicKey(), "a", "b", epoch, ciphertext, sig) {
 		t.Fatal("valid ML-DSA session signature rejected")
 	}
 	sharedB, err := recipient.Decapsulate(ciphertext)
@@ -36,13 +37,16 @@ func TestMLKEMSessionProducesSameWireGuardPSK(t *testing.T) {
 	}
 	a, _ := types.GenerateKey()
 	b, _ := types.GenerateKey()
-	pskA := DeriveWireGuardPSK(sharedA, "a", "b", a.Public(), b.Public(), recipient.KEMPublicKey())
-	pskB := DeriveWireGuardPSK(sharedB, "a", "b", a.Public(), b.Public(), recipient.KEMPublicKey())
+	pskA := DeriveWireGuardPSK(sharedA, "a", "b", epoch, a.Public(), b.Public(), recipient.KEMPublicKey())
+	pskB := DeriveWireGuardPSK(sharedB, "a", "b", epoch, a.Public(), b.Public(), recipient.KEMPublicKey())
 	if pskA != pskB || pskA.IsZero() {
 		t.Fatal("derived WireGuard PSKs differ or are zero")
 	}
+	if VerifySession(initiator.MLDSAPublicKey(), "a", "b", epoch+1, ciphertext, sig) {
+		t.Fatal("session signature accepted a changed epoch")
+	}
 	ciphertext[0] ^= 1
-	if VerifySession(initiator.MLDSAPublicKey(), "a", "b", ciphertext, sig) {
+	if VerifySession(initiator.MLDSAPublicKey(), "a", "b", epoch, ciphertext, sig) {
 		t.Fatal("tampered ciphertext signature verified")
 	}
 }

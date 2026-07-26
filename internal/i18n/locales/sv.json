@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "Svenska", "code": "sv" },
   "status.state": "Status:  {state}",
+  "status.cleanup.pending": "Varning: nätverksrensningen är inte klar. Starta om RatelMesh; kör `ratelmesh doctor` om problemet kvarstår.",
   "status.coord": "Coord:   {coord}",
   "status.self": "Denna:   {ip}  {name}  ({key})",
   "status.exit.active": "Exit:    {name} (all trafik dirigeras via denna exit)",

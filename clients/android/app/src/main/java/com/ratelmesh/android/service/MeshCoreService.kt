@@ -73,6 +73,21 @@ class MeshCoreService : Service() {
 
 		override fun setSystemLocation(latitude: Double, longitude: Double): String =
 			command { it.setSystemLocation(latitude, longitude) }
+
+        override fun doctorDisclosureVersion(): String =
+            withApp("") { it.doctorDisclosureVersion() }
+
+        override fun runNetworkDoctor(disclosureVersion: String, confirmed: Boolean): String =
+            withApp("") { it.runNetworkDoctor(disclosureVersion, confirmed) }
+
+        override fun applyNetworkDoctorRepair(
+            planID: String,
+            action: String,
+            disclosureVersion: String,
+            confirmed: Boolean,
+        ): String = withApp("") {
+            it.applyNetworkDoctorRepair(planID, action, disclosureVersion, confirmed)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

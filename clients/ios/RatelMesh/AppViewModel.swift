@@ -43,23 +43,70 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var meshStatus: MobileStatus?
     @Published private(set) var isBusy = false
     @Published private(set) var requestedExit: String?
-    @Published var errorMessage: String?
+    @Published private(set) var errorCode: TunnelErrorCode?
+    @Published private(set) var appGroupReady = false
     @Published var showingSettings = false
 
     private let store = SecureConfigurationStore()
-    private let tunnel = TunnelController()
+    private let tunnel: TunnelController
+    let networkDoctor: NetworkDoctorStore
 	private let systemLocation = SystemLocationProvider()
     private var refreshTask: Task<Void, Never>?
+    private var sharedDefaults: UserDefaults?
+    private var sharedContainerURL: URL?
+    private var errorQueue = TunnelErrorPresentationQueue()
+
+    init() {
+        let tunnel = TunnelController()
+        self.tunnel = tunnel
+        networkDoctor = NetworkDoctorStore(service: TunnelNetworkDoctorService(tunnel: tunnel))
+    }
 
     var isConnected: Bool { vpnStatus == .connected }
     var isTransitioning: Bool { vpnStatus == .connecting || vpnStatus == .disconnecting || vpnStatus == .reasserting }
     var exits: [MobilePeerStatus] { meshStatus?.exits ?? [] }
-    var selectedExit: String { AppConstants.sharedDefaults.string(forKey: AppConstants.selectedExitKey) ?? "" }
+    var selectedExit: String { sharedDefaults?.string(forKey: AppConstants.selectedExitKey) ?? "" }
     var activeExit: String { meshStatus?.activeExit ?? "" }
     var reportedSelectedExit: String { meshStatus?.selectedExit ?? activeExit }
+    var requiresReEnrollment: Bool { meshStatus?.enrollmentRequired == true }
 
     func prepare() async {
+        appGroupReady = false
+        sharedDefaults = nil
+        sharedContainerURL = nil
         do {
+            guard let defaults = AppConstants.sharedDefaults,
+                  let container = AppConstants.sharedContainerURL else {
+                throw AppGroupAccessError.unavailable
+            }
+            guard AppConstants.keychainAccessGroup != nil else {
+                throw StoreError.missingKeychainAccessGroup
+            }
+            try store.validateAccessGroup()
+            sharedDefaults = defaults
+            sharedContainerURL = container
+            try DeviceStateDirectory.excludeExistingFromBackup(in: container)
+            try await tunnel.prepare()
+            if enrollmentResetPending {
+                tunnel.stop()
+                guard await tunnel.waitUntilStopped() else {
+                    throw TunnelError.provider(.tunnelForcedTeardown)
+                }
+                try store.delete()
+                try resetEnrollmentState(deleteCredential: false)
+            }
+            if try store.prepareForCurrentInstallation(
+                allowLegacyMigration: tunnel.manager != nil,
+                onResetRequired: { try self.markEnrollmentResetPending() }
+            ) {
+                tunnel.stop()
+                guard await tunnel.waitUntilStopped() else {
+                    throw TunnelError.provider(.tunnelForcedTeardown)
+                }
+                try resetEnrollmentState(deleteCredential: false)
+            }
+            appGroupReady = true
+            observeProviderError()
             if let saved = try store.load() {
                 coordinatorURL = saved.coordinatorURL
                 authKey = saved.authKey
@@ -67,8 +114,10 @@ final class AppViewModel: ObservableObject {
             } else {
                 showingSettings = true
             }
-            try await tunnel.prepare()
             vpnStatus = tunnel.status
+            if vpnStatus == .connected {
+                systemLocation.start()
+            }
             beginRefreshing()
 			systemLocation.onLocation = { [weak self] coordinate in
 				Task { @MainActor in
@@ -76,7 +125,6 @@ final class AppViewModel: ObservableObject {
 					try? await self.tunnel.setSystemLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
 				}
 			}
-			systemLocation.start()
         } catch {
             present(error)
         }
@@ -84,6 +132,10 @@ final class AppViewModel: ObservableObject {
 
     func connect() async {
         guard !isBusy else { return }
+        guard appGroupReady, sharedDefaults != nil else {
+            present(AppGroupAccessError.unavailable)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -91,7 +143,6 @@ final class AppViewModel: ObservableObject {
             try store.save(config)
             try await tunnel.installIfNeeded()
             try tunnel.start()
-			systemLocation.start()
             showingSettings = false
         } catch {
             present(error)
@@ -102,7 +153,40 @@ final class AppViewModel: ObservableObject {
         tunnel.stop()
     }
 
+    func beginReEnrollment() {
+        guard !isBusy else { return }
+        isBusy = true
+        authKey = ""
+        showingSettings = true
+        do {
+            try markEnrollmentResetPending()
+            try store.delete()
+        } catch {
+            isBusy = false
+            present(error)
+            return
+        }
+        tunnel.stop()
+        Task {
+            defer { isBusy = false }
+            guard await tunnel.waitUntilStopped() else {
+                present(TunnelError.provider(.tunnelForcedTeardown))
+                return
+            }
+            do {
+                try resetEnrollmentState(deleteCredential: false)
+            } catch {
+                present(error)
+            }
+        }
+    }
+
     func saveSettings() async {
+        guard !isBusy else { return }
+        guard appGroupReady, sharedDefaults != nil else {
+            present(AppGroupAccessError.unavailable)
+            return
+        }
         do {
             let config = try currentConfiguration().validated()
             try store.save(config)
@@ -115,9 +199,13 @@ final class AppViewModel: ObservableObject {
 
     func selectExit(_ name: String) async {
         guard requestedExit == nil else { return }
+        guard appGroupReady, let sharedDefaults else {
+            present(AppGroupAccessError.unavailable)
+            return
+        }
         requestedExit = name
         defer { requestedExit = nil }
-        AppConstants.sharedDefaults.set(name, forKey: AppConstants.selectedExitKey)
+        sharedDefaults.set(name, forKey: AppConstants.selectedExitKey)
         guard isConnected else { return }
         do {
             try await tunnel.setExit(name)
@@ -127,14 +215,39 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func clearError() { errorMessage = nil }
+    func acknowledgeError() {
+        guard errorQueue.current != nil else { return }
+        if let eventID = errorQueue.current?.providerEventID {
+            guard let sharedDefaults, let sharedContainerURL else {
+                present(AppGroupAccessError.unavailable)
+                return
+            }
+            do {
+                try TunnelErrorStore.acknowledge(
+                    eventID,
+                    in: sharedDefaults,
+                    containerURL: sharedContainerURL
+                )
+            } catch {
+                present(error)
+                return
+            }
+        }
+        _ = errorQueue.acknowledgeCurrent()
+        refreshPresentedError()
+        observeProviderError()
+    }
 
     private func beginRefreshing() {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                self.vpnStatus = self.tunnel.status
+                let nextStatus = self.tunnel.status
+                if nextStatus == .connected && self.vpnStatus != .connected {
+                    self.systemLocation.start()
+                }
+                self.vpnStatus = nextStatus
                 await self.refreshStatus()
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -145,14 +258,11 @@ final class AppViewModel: ObservableObject {
         do {
             if let data = try await tunnel.statusData(), !data.isEmpty {
                 meshStatus = try JSONDecoder().decode(MobileStatus.self, from: data)
-            } else if let json = AppConstants.sharedDefaults.string(forKey: AppConstants.lastStatusKey),
+            } else if let json = sharedDefaults?.string(forKey: AppConstants.lastStatusKey),
                       let data = json.data(using: .utf8) {
                 meshStatus = try? JSONDecoder().decode(MobileStatus.self, from: data)
             }
-            if let providerError = AppConstants.sharedDefaults.string(forKey: AppConstants.lastProviderErrorKey),
-               !providerError.isEmpty, vpnStatus == .invalid {
-                errorMessage = providerError
-            }
+            observeProviderError()
         } catch {
             // The provider can disappear between status observation and IPC.
         }
@@ -162,8 +272,83 @@ final class AppViewModel: ObservableObject {
         ClientConfiguration(coordinatorURL: coordinatorURL, authKey: authKey, hostname: hostname)
     }
 
+    private func resetEnrollmentState(deleteCredential: Bool) throws {
+        if deleteCredential {
+            try store.delete()
+        }
+        sharedDefaults?.removeObject(forKey: AppConstants.selectedExitKey)
+        sharedDefaults?.removeObject(forKey: AppConstants.lastStatusKey)
+        sharedDefaults?.removeObject(forKey: AppConstants.lastProviderErrorKey)
+        sharedDefaults?.removeObject(forKey: AppConstants.legacyLastProviderErrorKey)
+        sharedDefaults?.removeObject(forKey: AppConstants.migratedProviderErrorKey)
+        sharedDefaults?.removeObject(forKey: AppConstants.lastSeenProviderErrorEventKey)
+
+        if let sharedContainerURL {
+            let state = sharedContainerURL.appendingPathComponent("State", isDirectory: true)
+            if FileManager.default.fileExists(atPath: state.path) {
+                try FileManager.default.removeItem(at: state)
+            }
+            for file in [
+                AppConstants.providerErrorQueueFile,
+                AppConstants.providerErrorQueueLockFile,
+            ] {
+                let url = sharedContainerURL.appendingPathComponent(file)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
+            let marker = sharedContainerURL.appendingPathComponent(
+                AppConstants.enrollmentResetPendingFile
+            )
+            if FileManager.default.fileExists(atPath: marker.path) {
+                try FileManager.default.removeItem(at: marker)
+            }
+        }
+        meshStatus = nil
+        requestedExit = nil
+        errorQueue = TunnelErrorPresentationQueue()
+        errorCode = nil
+    }
+
+    private var enrollmentResetPending: Bool {
+        guard let sharedContainerURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: sharedContainerURL.appendingPathComponent(
+                AppConstants.enrollmentResetPendingFile
+            ).path
+        )
+    }
+
+    private func markEnrollmentResetPending() throws {
+        guard let sharedContainerURL else { throw AppGroupAccessError.unavailable }
+        let marker = sharedContainerURL.appendingPathComponent(
+            AppConstants.enrollmentResetPendingFile
+        )
+        try Data("pending\n".utf8).write(to: marker, options: .atomic)
+    }
+
     private func present(_ error: Error) {
-        errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        errorQueue.enqueueLocal(TunnelErrorReport.sanitized(error).code)
+        refreshPresentedError()
+    }
+
+    private func observeProviderError() {
+        guard let sharedDefaults, let sharedContainerURL else { return }
+        do {
+            for event in try TunnelErrorStore.pendingEvents(
+                from: sharedDefaults,
+                containerURL: sharedContainerURL
+            ) {
+                errorQueue.enqueueProvider(event)
+            }
+            refreshPresentedError()
+        } catch {
+            present(error)
+        }
+    }
+
+    private func refreshPresentedError() {
+        errorCode = errorQueue.current?.code
     }
 
     private static var defaultHostname: String {

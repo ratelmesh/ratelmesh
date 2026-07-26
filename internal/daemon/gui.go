@@ -130,7 +130,7 @@ function renderRoute(s){
  use.classList.toggle('selected',!!shown&&shown===selected);direct.classList.toggle('selected',!shown);
  use.setAttribute('aria-pressed',!!shown&&shown===selected?'true':'false');direct.setAttribute('aria-pressed',!shown?'true':'false');
 }
-var refreshing=false;
+var refreshing=false,doctorPlanID='';
 async function refresh(){
  if(refreshing)return; refreshing=true;
  try{
@@ -177,20 +177,21 @@ async function runDoctor(){
   if(!window.confirm(T('doctorconsent')))return;
   storageSet('ratelmeshdoctorconsent',DOCTOR_DISCLOSURE_VERSION);
  }
- button.disabled=true;result.textContent=T('doctorworking');repairs.textContent='';
+ button.disabled=true;doctorPlanID='';result.textContent=T('doctorworking');repairs.textContent='';
  try{
   var response=await fetch('/localapi/doctor',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION}),cache:'no-store'});if(!response.ok)throw new Error('status '+response.status);
-  var data=await response.json(),summary=data.report&&data.report.summary?data.report.summary:{};
+  var data=await response.json(),summary=data.report&&data.report.summary?data.report.summary:{};doctorPlanID=data.planID||'';
   result.textContent=summary.ok?T('doctorok'):T('doctorissues').replace('{n}',summary.total_findings||0).replace('{severity}',summary.worst_severity||'-');
   (data.report&&data.report.findings||[]).forEach(function(f){var line=document.createElement('div');line.textContent=(f.code||'')+': '+(f.summary||'');result.appendChild(line);});
   var available={};(data.availableRepairs||[]).forEach(function(action){available[action]=true;});
-  (data.plan&&data.plan.repairs||[]).forEach(function(repair){if(!repair.applicable||!available[repair.action])return;var b=document.createElement('button');b.textContent=T('repair').replace('{title}',repair.title||repair.action);b.onclick=function(){repairDoctor(repair.action);};repairs.appendChild(b);});
+  (data.plan&&data.plan.repairs||[]).forEach(function(repair){if(!doctorPlanID||!repair.applicable||!available[repair.action])return;var b=document.createElement('button');b.textContent=T('repair').replace('{title}',repair.title||repair.action);b.onclick=function(){repairDoctor(repair.action);};repairs.appendChild(b);});
  }catch(e){result.textContent=T('actionfail')+' '+e.message;}finally{button.disabled=false;}
 }
 async function repairDoctor(action){
- if(!window.confirm(T('confirmrepair')))return;
+ if(!doctorPlanID||!window.confirm(T('confirmrepair')))return;
  var result=document.getElementById('doctorresult');
- try{var response=await fetch('/localapi/doctor/repair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})});if(!response.ok)throw new Error(await response.text());result.textContent=T('repairdone');await runDoctor();}catch(e){result.textContent=T('actionfail')+' '+e.message;}
+ var planID=doctorPlanID;doctorPlanID='';
+ try{var response=await fetch('/localapi/doctor/repair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planID:planID,action:action,confirm:true,disclosureVersion:DOCTOR_DISCLOSURE_VERSION})});if(!response.ok)throw new Error(await response.text());result.textContent=T('repairdone');await runDoctor();}catch(e){result.textContent=T('actionfail')+' '+e.message;}
 }
 renderStatic(); refresh(); setInterval(refresh,2000);
 </script>

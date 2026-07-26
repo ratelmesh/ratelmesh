@@ -1,19 +1,22 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/diagnose"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 func TestDoctorRepairRequestRejectsUnknownFieldsAndRequiresConfirmation(t *testing.T) {
@@ -26,6 +29,7 @@ func TestDoctorRepairRequestRejectsUnknownFieldsAndRequiresConfirmation(t *testi
 		{body: `{"action":"flush-dns","confirm":false}`, want: http.StatusPreconditionRequired},
 		{body: `{"action":"flush-dns","confirm":true}`, want: http.StatusPreconditionRequired},
 		{body: `{"action":"flush-dns","confirm":true,"disclosureVersion":"old"}`, want: http.StatusPreconditionRequired},
+		{body: `{"action":"","confirm":true,"disclosureVersion":"v1"}`, want: http.StatusBadRequest},
 		{body: `{"action":"rebuild-exit","confirm":true,"disclosureVersion":"v1"}`, want: http.StatusNotImplemented},
 		{body: `{"action":"restart-wireguard","confirm":true,"disclosureVersion":"v1"}`, want: http.StatusNotImplemented},
 	}
@@ -255,18 +259,297 @@ func TestDoctorActiveEndpointRequiresCurrentDisclosure(t *testing.T) {
 }
 
 func TestDoctorRunAdmissionIsSingleFlight(t *testing.T) {
-	api := &LocalAPI{}
-	if !api.acquireDoctorRun() {
+	doctor := newNetworkDoctor(&Daemon{})
+	if !doctor.acquire() {
 		t.Fatal("first diagnosis was not admitted")
 	}
-	if api.acquireDoctorRun() {
+	if doctor.acquire() {
 		t.Fatal("concurrent diagnosis was admitted")
 	}
-	api.releaseDoctorRun()
-	if !api.acquireDoctorRun() {
+	doctor.release()
+	if !doctor.acquire() {
 		t.Fatal("diagnosis was not admitted after release")
 	}
-	api.releaseDoctorRun()
+	doctor.release()
+}
+
+func TestDoctorPlanAuthorizationIsOpaqueOneUseAndExpiring(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	doctor := newNetworkDoctor(&Daemon{})
+	doctor.now = func() time.Time { return now }
+	doctor.random = bytes.NewReader(bytes.Repeat([]byte{0x5a}, doctorTokenBytes*2))
+
+	planID, expiresAt, err := doctor.issuePlan([]diagnose.RepairActionID{diagnose.ActionFlushDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planID == "" || !expiresAt.Equal(now.Add(doctorPlanTTL)) {
+		t.Fatalf("plan authorization = %q, %v", planID, expiresAt)
+	}
+	wrong := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x33}, doctorTokenBytes))
+	if err := doctor.consumePlan(wrong, diagnose.ActionFlushDNS); !errors.Is(err, ErrDoctorPlanMismatch) {
+		t.Fatalf("wrong plan ID = %v", err)
+	}
+	if err := doctor.consumePlan("not-base64!", diagnose.ActionFlushDNS); !errors.Is(err, ErrDoctorPlanMismatch) {
+		t.Fatalf("malformed non-empty plan ID = %v", err)
+	}
+	if err := doctor.consumePlan(planID, diagnose.ActionRebuildExit); !errors.Is(err, ErrDoctorPlanMismatch) {
+		t.Fatalf("wrong action = %v", err)
+	}
+	if err := doctor.consumePlan(planID, diagnose.ActionFlushDNS); err != nil {
+		t.Fatalf("valid plan rejected after token/action mismatch: %v", err)
+	}
+	if err := doctor.consumePlan(planID, diagnose.ActionFlushDNS); !errors.Is(err, ErrDoctorPlanRequired) {
+		t.Fatalf("one-use plan replay = %v", err)
+	}
+
+	expiring, _, err := doctor.issuePlan([]diagnose.RepairActionID{diagnose.ActionFlushDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(doctorPlanTTL)
+	if err := doctor.consumePlan(expiring, diagnose.ActionFlushDNS); !errors.Is(err, ErrDoctorPlanExpired) {
+		t.Fatalf("expired plan = %v", err)
+	}
+}
+
+func TestDoctorPlanExpiresWhenDaemonRunSessionEnds(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	d := &Daemon{runCtx: runCtx}
+	doctor := newNetworkDoctor(d)
+	doctor.random = bytes.NewReader(bytes.Repeat([]byte{0x6b}, doctorTokenBytes))
+	planID, _, err := doctor.issuePlan([]diagnose.RepairActionID{diagnose.ActionFlushDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := doctor.consumePlan(planID, diagnose.ActionFlushDNS); !errors.Is(err, ErrDoctorPlanExpired) {
+		t.Fatalf("plan survived daemon run cancellation: %v", err)
+	}
+}
+
+func TestDoctorPlanHasExactlyOneConcurrentConsumer(t *testing.T) {
+	doctor := newNetworkDoctor(&Daemon{})
+	planID, _, err := doctor.issuePlan([]diagnose.RepairActionID{diagnose.ActionFlushDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const consumers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var countMu sync.Mutex
+	successes := 0
+	for i := 0; i < consumers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if doctor.consumePlan(planID, diagnose.ActionFlushDNS) == nil {
+				countMu.Lock()
+				successes++
+				countMu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if successes != 1 {
+		t.Fatalf("successful concurrent consumers = %d, want 1", successes)
+	}
+}
+
+func TestDoctorInvalidOrUnsupportedActionDoesNotConsumePlan(t *testing.T) {
+	d := &Daemon{systemResolver: &cacheCountingResolver{}}
+	doctor := newNetworkDoctor(d)
+	planID, _, err := doctor.issuePlan([]diagnose.RepairActionID{diagnose.ActionFlushDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doctor.Repair(
+		context.Background(), planID, "", true, doctorDisclosureVersion,
+	); !errors.Is(err, ErrDoctorInvalidRequest) {
+		t.Fatalf("empty action = %v", err)
+	}
+	if _, err := doctor.Repair(
+		context.Background(), planID, "run-command", true, doctorDisclosureVersion,
+	); !errors.Is(err, ErrDoctorRepairUnsupported) {
+		t.Fatalf("unsupported action = %v", err)
+	}
+	if err := doctor.consumePlan(planID, diagnose.ActionFlushDNS); err != nil {
+		t.Fatalf("valid plan burned by rejected action: %v", err)
+	}
+}
+
+func TestDoctorNewDiagnosisInvalidatesPriorPlan(t *testing.T) {
+	doctor := newNetworkDoctor(&Daemon{})
+	oldPlanID, _, err := doctor.issuePlan([]diagnose.RepairActionID{diagnose.ActionFlushDNS})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = doctor.Run(ctx, true, doctorDisclosureVersion)
+	if err := doctor.consumePlan(oldPlanID, diagnose.ActionFlushDNS); err == nil {
+		t.Fatal("prior plan remained valid after a newer diagnosis")
+	}
+}
+
+func TestDoctorRepairRequiresPlanAndReturnsStableError(t *testing.T) {
+	api := &LocalAPI{d: &Daemon{systemResolver: &cacheCountingResolver{}}}
+	req := httptest.NewRequest(http.MethodPost, "/localapi/doctor/repair", strings.NewReader(
+		`{"action":"flush-dns","confirm":true,"disclosureVersion":"v1"}`,
+	))
+	rec := httptest.NewRecorder()
+	api.handleDoctorRepair(rec, req)
+	if rec.Code != http.StatusPreconditionFailed ||
+		strings.TrimSpace(rec.Body.String()) != ErrDoctorPlanRequired.Error() {
+		t.Fatalf("missing plan response = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("error response cache policy = %q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestDoctorRepairCapabilityRequiresRuntimeBackend(t *testing.T) {
+	doctor := newNetworkDoctor(&Daemon{})
+	if doctor.canExecuteRepair(diagnose.ActionFlushDNS) {
+		t.Fatal("flush-dns repair offered without a system resolver")
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	doctor = newNetworkDoctor(&Daemon{
+		systemResolver: &cacheCountingResolver{},
+		runCtx:         runCtx,
+	})
+	if doctor.canExecuteRepair(diagnose.ActionFlushDNS) {
+		t.Fatal("flush-dns repair offered after the daemon run ended")
+	}
+}
+
+func TestDoctorRepairCapabilityAndExecutorReadResolverUnderDaemonLock(t *testing.T) {
+	resolver := &cacheCountingResolver{}
+	d := &Daemon{systemResolver: resolver}
+	doctor := newNetworkDoctor(d)
+	executor := &daemonDoctorExecutor{d: d}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 10000; i++ {
+			d.mu.Lock()
+			if i%2 == 0 {
+				d.systemResolver = nil
+			} else {
+				d.systemResolver = resolver
+			}
+			d.mu.Unlock()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 10000; i++ {
+			_ = doctor.canExecuteRepair(diagnose.ActionFlushDNS)
+			_ = executor.Apply(
+				context.Background(), diagnose.Step{Op: diagnose.OpFlushDNS}, nil,
+			)
+		}
+	}()
+	close(start)
+	wg.Wait()
+}
+
+func TestDoctorJSONEnvelopeIsBounded(t *testing.T) {
+	payload, err := marshalDoctorJSON(NetworkDoctorResult{Schema: doctorAPISchema})
+	if err != nil || !strings.Contains(payload, `"schema":"ratelmesh.doctor.api/v1"`) {
+		t.Fatalf("stable envelope = %q, %v", payload, err)
+	}
+	if _, err := marshalDoctorJSON(strings.Repeat("x", maxDoctorJSONBytes+1)); !errors.Is(err, ErrDoctorResponseTooLarge) {
+		t.Fatalf("oversized response = %v", err)
+	}
+	exact, err := marshalDoctorJSON(strings.Repeat("x", maxDoctorJSONBytes-2))
+	if err != nil || len(exact) != maxDoctorJSONBytes {
+		t.Fatalf("exact-size response = %d bytes, %v", len(exact), err)
+	}
+	if _, err := marshalDoctorJSON(strings.Repeat("x", maxDoctorJSONBytes-1)); !errors.Is(err, ErrDoctorResponseTooLarge) {
+		t.Fatalf("one-byte-oversized response = %v", err)
+	}
+}
+
+func TestDoctorObservationErrorsUseStableWireFieldNames(t *testing.T) {
+	payload, err := marshalDoctorJSON(NetworkDoctorResult{
+		Schema: doctorAPISchema,
+		ObservationErrors: []NetworkDoctorObservationError{{
+			Observation: "dns",
+			Kind:        "unavailable",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"observation":"dns"`) ||
+		!strings.Contains(payload, `"kind":"unavailable"`) ||
+		strings.Contains(payload, `"Observation"`) ||
+		strings.Contains(payload, `"Kind"`) {
+		t.Fatalf("unstable observation error JSON: %s", payload)
+	}
+}
+
+func TestDoctorUnknownErrorIsNotExposed(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeDoctorError(rec, errors.New("secret path /Users/example/private"))
+	if rec.Code != http.StatusServiceUnavailable ||
+		strings.TrimSpace(rec.Body.String()) != ErrDoctorUnavailable.Error() {
+		t.Fatalf("unknown error response = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+type doctorFailedPostconditionExecutor struct{}
+
+func (doctorFailedPostconditionExecutor) CaptureSnapshot(
+	context.Context, diagnose.SnapshotRequest,
+) (diagnose.SnapshotData, error) {
+	return diagnose.SnapshotData{}, nil
+}
+
+func (doctorFailedPostconditionExecutor) Apply(
+	context.Context, diagnose.Step, []diagnose.SnapshotData,
+) error {
+	return nil
+}
+
+func (doctorFailedPostconditionExecutor) CheckPostcondition(
+	context.Context, diagnose.PostconditionID, []diagnose.SnapshotData,
+) (bool, error) {
+	return false, nil
+}
+
+func TestDoctorFlushDNSFailureNeverClaimsRollback(t *testing.T) {
+	snapshot := diagnose.Snapshot{
+		DNS: diagnose.DNSState{Servers: []netip.Addr{netip.MustParseAddr("1.1.1.1")}},
+	}
+	env := &diagnose.Env{
+		Snapshot: snapshot,
+		Config:   diagnose.DefaultConfig(),
+		Deps:     diagnose.NewStdNetDeps(),
+	}
+	plan := diagnose.Plan(env, []diagnose.Finding{{Code: diagnose.CodeDNSTimeout}})
+	execution := diagnose.Execute(
+		context.Background(), env, plan, doctorFailedPostconditionExecutor{},
+	)
+	payload, err := marshalDoctorJSON(NetworkDoctorExecution{
+		Schema: doctorExecutionSchema, Execution: execution,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"status":"uncertain"`) ||
+		!strings.Contains(payload, `"error":"repair_uncertain"`) ||
+		strings.Contains(payload, `"status":"rolled_back"`) {
+		t.Fatalf("flush-DNS rollback semantics are misleading: %s", payload)
+	}
 }
 
 func TestDoctorSnapshotCarriesWireGuardCounters(t *testing.T) {

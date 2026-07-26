@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "繁體中文", "code": "zh-Hant" },
   "status.state": "狀態：   {state}",
+  "status.cleanup.pending": "警告：網路清理未完成。請重新啟動 RatelMesh；如果仍然出現，請執行 `ratelmesh doctor`。",
   "status.coord": "協調器： {coord}",
   "status.self": "本機：   {ip}  {name}  ({key})",
   "status.exit.active": "出口：   {name}（所有流量皆經由此出口）",

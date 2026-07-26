@@ -103,6 +103,11 @@ the same key. Production distribution also requires Play Console VPN policy and
 foreground-service declarations, a privacy policy, and testing of the signed
 bundle on supported ABIs.
 
+`assembleDebug` uses Android's standard local debug certificate. Its APK is for
+development only: never publish it or present it as a production-signed build.
+`assembleRelease` without `keystore.properties` produces an unsigned APK and is
+also not distributable.
+
 `scripts/bundle-release.sh` runs release tests and lint, builds the AAB and
 rejects it unless `jarsigner` verifies the final bundle.
 

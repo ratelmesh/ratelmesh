@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">Accepteren en doorgaan</string>
     <string name="vpn_disclosure_decline">Niet nu</string>
     <string name="error_android_closed_vpn">Android heeft de VPN-tunnel gesloten</string>
+    <string name="error_connection_failed">Kan geen verbinding maken. Controleer het netwerk en de instellingen en probeer het opnieuw.</string>
     <string name="error_coordinator_required">Coördinator-URL is verplicht</string>
     <string name="error_device_required">Apparaatnaam is verplicht</string>
     <string name="error_state_directory">De beveiligde statusmap kon niet worden gemaakt</string>

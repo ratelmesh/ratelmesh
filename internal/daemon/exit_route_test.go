@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/netguard"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/netguard"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 type gatedTestEngine struct {

@@ -48,8 +48,19 @@ const wsCamoPath = "/chat"
 // tiny; 1 MiB is generous.
 const wsMaxFrameSize = 1 << 20
 
-// errFrameTooLarge is returned when a frame's declared length exceeds the cap.
-var errFrameTooLarge = errors.New("wscamo: frame exceeds maximum size")
+const (
+	wsMaxHeaderLineBytes          = 4096
+	wsMaxHeaderBytes              = 16 << 10
+	wsMaxHeaderCount              = 64
+	wsMaxConsecutiveControlFrames = 32
+)
+
+var (
+	// errFrameTooLarge is returned when a frame's declared length exceeds the cap.
+	errFrameTooLarge      = errors.New("wscamo: frame exceeds maximum size")
+	errInvalidFrame       = errors.New("wscamo: invalid WebSocket frame")
+	errHTTPHeaderTooLarge = errors.New("wscamo: HTTP upgrade headers exceed limit")
+)
 
 // WebSocket opcodes (RFC 6455 §5.2) used by this transport.
 const (
@@ -97,6 +108,9 @@ func (t *WSCamo) Client(raw net.Conn) (net.Conn, error) {
 	if host == "" {
 		host = "localhost"
 	}
+	if strings.ContainsAny(host, "\r\n") {
+		return nil, errors.New("wscamo: invalid server name")
+	}
 	req := "GET " + wsCamoPath + " HTTP/1.1\r\n" +
 		"Host: " + host + "\r\n" +
 		"Upgrade: websocket\r\n" +
@@ -110,18 +124,21 @@ func (t *WSCamo) Client(raw net.Conn) (net.Conn, error) {
 
 	// bufio.Reader may buffer bytes past the handshake (the first frames); it is
 	// handed to the wsConn so nothing is lost.
-	br := bufio.NewReader(raw)
+	br := bufio.NewReaderSize(raw, wsMaxHeaderLineBytes+1)
 	statusLine, headers, err := readHTTPMessage(br)
 	if err != nil {
 		return nil, fmt.Errorf("wscamo: client read handshake: %w", err)
 	}
 	// Expect "HTTP/1.1 101 Switching Protocols".
-	fields := strings.SplitN(statusLine, " ", 3)
-	if len(fields) < 2 || fields[1] != "101" {
-		return nil, fmt.Errorf("wscamo: unexpected handshake status %q", statusLine)
+	fields := strings.Fields(statusLine)
+	if len(fields) < 2 || fields[0] != "HTTP/1.1" || fields[1] != "101" {
+		return nil, errors.New("wscamo: unexpected handshake status")
 	}
 	if !strings.EqualFold(headers["upgrade"], "websocket") {
 		return nil, errors.New("wscamo: server did not confirm websocket upgrade")
+	}
+	if !headerHasToken(headers["connection"], "upgrade") {
+		return nil, errors.New("wscamo: server did not confirm Connection: Upgrade")
 	}
 	want := computeAccept(key)
 	if headers["sec-websocket-accept"] != want {
@@ -135,25 +152,35 @@ func (t *WSCamo) Client(raw net.Conn) (net.Conn, error) {
 // Protocols, and returns a conn that de-frames masked client frames and writes
 // unmasked BINARY frames back.
 func (t *WSCamo) Server(raw net.Conn) (net.Conn, error) {
-	br := bufio.NewReader(raw)
+	br := bufio.NewReaderSize(raw, wsMaxHeaderLineBytes+1)
 	requestLine, headers, err := readHTTPMessage(br)
 	if err != nil {
 		return nil, fmt.Errorf("wscamo: server read handshake: %w", err)
 	}
 	// Expect "GET <path> HTTP/1.1".
 	fields := strings.Fields(requestLine)
-	if len(fields) < 3 || fields[0] != "GET" {
-		return nil, fmt.Errorf("wscamo: bad request line %q", requestLine)
+	if len(fields) != 3 || fields[0] != "GET" || fields[1] != wsCamoPath || fields[2] != "HTTP/1.1" {
+		return nil, errors.New("wscamo: invalid upgrade request line")
+	}
+	if headers["host"] == "" {
+		return nil, errors.New("wscamo: request missing Host")
+	}
+	if headers["origin"] != "" {
+		return nil, errors.New("wscamo: browser-origin WebSocket requests are not accepted")
 	}
 	if !strings.EqualFold(headers["upgrade"], "websocket") {
 		return nil, errors.New("wscamo: request is not a websocket upgrade")
 	}
-	if !strings.Contains(strings.ToLower(headers["connection"]), "upgrade") {
+	if !headerHasToken(headers["connection"], "upgrade") {
 		return nil, errors.New("wscamo: request missing Connection: Upgrade")
 	}
 	key := headers["sec-websocket-key"]
-	if key == "" {
-		return nil, errors.New("wscamo: request missing Sec-WebSocket-Key")
+	decodedKey, err := base64.StdEncoding.DecodeString(key)
+	if err != nil || len(decodedKey) != 16 {
+		return nil, errors.New("wscamo: invalid Sec-WebSocket-Key")
+	}
+	if headers["sec-websocket-version"] != "13" {
+		return nil, errors.New("wscamo: unsupported WebSocket version")
 	}
 
 	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
@@ -186,34 +213,61 @@ func readHTTPMessage(br *bufio.Reader) (firstLine string, headers map[string]str
 	if err != nil {
 		return "", nil, err
 	}
+	total := len(firstLine) + 2
 	headers = make(map[string]string)
 	for {
 		line, lerr := readLine(br)
 		if lerr != nil {
 			return "", nil, lerr
 		}
+		total += len(line) + 2
+		if total > wsMaxHeaderBytes {
+			return "", nil, errHTTPHeaderTooLarge
+		}
 		if line == "" {
 			break
 		}
+		if len(headers) >= wsMaxHeaderCount {
+			return "", nil, errHTTPHeaderTooLarge
+		}
 		colon := strings.IndexByte(line, ':')
-		if colon < 0 {
-			continue // tolerate malformed header lines
+		if colon <= 0 {
+			return "", nil, errors.New("wscamo: malformed HTTP header")
 		}
 		name := strings.ToLower(strings.TrimSpace(line[:colon]))
 		value := strings.TrimSpace(line[colon+1:])
+		if name == "" {
+			return "", nil, errors.New("wscamo: malformed HTTP header name")
+		}
+		if _, exists := headers[name]; exists {
+			return "", nil, errors.New("wscamo: duplicate HTTP header")
+		}
 		headers[name] = value
 	}
 	return firstLine, headers, nil
 }
 
-// readLine reads a single CRLF- (or LF-) terminated line and returns it without
-// the terminator.
+func headerHasToken(value, want string) bool {
+	for _, token := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(token), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// readLine reads a bounded CRLF- (or LF-) terminated line and returns it without
+// the terminator. ReadSlice deliberately fails at the fixed reader boundary
+// rather than allocating until an attacker eventually sends a newline.
 func readLine(br *bufio.Reader) (string, error) {
-	line, err := br.ReadString('\n')
+	line, err := br.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) || len(line) > wsMaxHeaderLineBytes {
+		return "", errHTTPHeaderTooLarge
+	}
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return strings.TrimRight(string(line), "\r\n"), nil
 }
 
 // wsConn frames outbound writes as RFC 6455 BINARY frames and de-frames inbound
@@ -241,18 +295,23 @@ func (c *wsConn) Read(p []byte) (int, error) {
 	c.rmu.Lock()
 	defer c.rmu.Unlock()
 
+	controlFrames := 0
 	for len(c.readBuf) == 0 {
 		payload, opcode, err := c.readFrame()
 		if err != nil {
 			return 0, err
 		}
 		switch opcode {
-		case wsOpcodeBinary, wsOpcodeText, wsOpcodeContinuation:
+		case wsOpcodeBinary:
 			c.readBuf = payload
 		case wsOpcodeClose:
 			return 0, io.EOF
 		case wsOpcodePing, wsOpcodePong:
 			// Control frames carry no tunnel data; ignore and read the next one.
+			controlFrames++
+			if controlFrames > wsMaxConsecutiveControlFrames {
+				return 0, errInvalidFrame
+			}
 			continue
 		default:
 			return 0, fmt.Errorf("wscamo: unknown opcode 0x%x", opcode)
@@ -273,7 +332,14 @@ func (c *wsConn) readFrame() ([]byte, byte, error) {
 		return nil, 0, err
 	}
 	opcode := hdr[0] & 0x0f
+	fin := hdr[0]&0x80 != 0
+	if hdr[0]&0x70 != 0 || !fin {
+		return nil, 0, errInvalidFrame
+	}
 	masked := hdr[1]&0x80 != 0
+	if masked != !c.isClient {
+		return nil, 0, errInvalidFrame
+	}
 	length := uint64(hdr[1] & 0x7f)
 
 	switch length {
@@ -295,6 +361,14 @@ func (c *wsConn) readFrame() ([]byte, byte, error) {
 	// huge allocation with a forged 64-bit length (memory DoS).
 	if length > wsMaxFrameSize {
 		return nil, 0, errFrameTooLarge
+	}
+	if opcode >= wsOpcodeClose && length > 125 {
+		return nil, 0, errInvalidFrame
+	}
+	switch opcode {
+	case wsOpcodeBinary, wsOpcodeClose, wsOpcodePing, wsOpcodePong:
+	default:
+		return nil, 0, errInvalidFrame
 	}
 
 	var maskKey [4]byte
@@ -336,6 +410,9 @@ func (c *wsConn) Write(p []byte) (int, error) {
 // 7-/16-/64-bit length form and masking the payload when isClient is true.
 func (c *wsConn) buildFrame(p []byte) ([]byte, error) {
 	n := uint64(len(p))
+	if n > wsMaxFrameSize {
+		return nil, errFrameTooLarge
+	}
 
 	// First byte: FIN | opcode.
 	header := []byte{0x80 | wsOpcodeBinary}

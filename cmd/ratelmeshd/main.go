@@ -16,12 +16,12 @@ import (
 	"syscall"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/shan25519/ratelmesh/internal/daemon"
-	"github.com/shan25519/ratelmesh/internal/netguard"
-	"github.com/shan25519/ratelmesh/internal/routing"
-	"github.com/shan25519/ratelmesh/internal/sign"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/daemon"
+	"github.com/ratelmesh/ratelmesh/internal/netguard"
+	"github.com/ratelmesh/ratelmesh/internal/routing"
+	"github.com/ratelmesh/ratelmesh/internal/sign"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 func main() {

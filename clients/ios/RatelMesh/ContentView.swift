@@ -7,9 +7,14 @@ private enum RatelMeshBrand {
     static let white = Color(red: 244 / 255, green: 247 / 255, blue: 249 / 255)
     static let cyan = Color(red: 32 / 255, green: 185 / 255, blue: 232 / 255)
     static let accessibleCyan = Color(red: 0 / 255, green: 106 / 255, blue: 140 / 255)
+    static let accessibleGreen = Color(red: 0 / 255, green: 106 / 255, blue: 78 / 255)
 
     static func action(for colorScheme: ColorScheme) -> Color {
         colorScheme == .dark ? cyan : accessibleCyan
+    }
+
+    static func success(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Color(red: 102 / 255, green: 222 / 255, blue: 175 / 255) : accessibleGreen
     }
 }
 
@@ -18,6 +23,7 @@ struct ContentView: View {
     @Binding var language: ProductLanguage
     @AppStorage("geographicPrivacyAcknowledgedV1") private var privacyAcknowledged = false
     @State private var showingPrivacy = false
+    @State private var showingNetworkDoctor = false
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openURL) private var openURL
 
@@ -30,11 +36,27 @@ struct ContentView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
 
+                if model.requiresReEnrollment {
+                    Section(t("需要重新入网", "Enrollment required")) {
+                        Text(t(
+                            "入网授权已过期或被撤销。请断开连接，然后输入新的一次性入网码。",
+                            "Your enrollment expired or was revoked. Disconnect and enter a new one-use code."
+                        ))
+                        Button(t("重新入网此设备", "Re-enroll this device")) {
+                            model.beginReEnrollment()
+                        }
+                    }
+                }
+
                 Section {
                     HStack(spacing: 10) {
                         if model.requestedExit != nil { ProgressView() }
                         else if !model.activeExit.isEmpty && model.meshStatus?.exitTrafficVerified != true { ProgressView() }
-                        else { Image(systemName: "checkmark.circle.fill").foregroundStyle(model.activeExit.isEmpty ? RatelMeshBrand.action(for: colorScheme) : .green) }
+                        else {
+                            Image(systemName: model.isConnected && !model.requiresReEnrollment ? "checkmark.circle.fill" : "wifi.slash")
+                                .foregroundStyle(routeIndicatorColor)
+                                .accessibilityHidden(true)
+                        }
                         VStack(alignment: .leading, spacing: 3) {
                             Text(t("当前互联网线路", "CURRENT INTERNET ROUTE"))
                                 .font(.caption).foregroundStyle(.secondary)
@@ -52,7 +74,7 @@ struct ContentView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.requestedExit != nil)
+                    .disabled(model.requestedExit != nil || model.requiresReEnrollment)
 
                     ForEach(model.exits) { exit in
                         Button {
@@ -65,7 +87,7 @@ struct ContentView: View {
                             )
                         }
                         .buttonStyle(.plain)
-                        .disabled(!exit.online || model.requestedExit != nil)
+                        .disabled(!exit.online || model.requestedExit != nil || model.requiresReEnrollment)
                     }
 
                     if model.exits.isEmpty {
@@ -74,28 +96,24 @@ struct ContentView: View {
                     }
                 } header: { Text(t("互联网线路", "Internet route")) }
 
-                if let status = model.meshStatus {
+                if model.isConnected, !model.requiresReEnrollment, let status = model.meshStatus {
                     Section(t("网络", "Network")) {
-                        LabeledContent(t("控制核心", "Control core"), value: status.state)
+                        LabeledContent(t("控制核心", "Control core"), value: localizedCoreState(status.state))
                         LabeledContent(t("设备", "Devices"), value: "\(status.peers.count + 1)")
                         LabeledContent(t("当前线路", "Current route"), value: status.activeExit.isEmpty ? "DIRECT" : "EXIT · \(status.activeExit)")
                     }
                 }
 
-                if let peers = model.meshStatus?.peers.filter({ $0.remoteAccessAllowed == true && !$0.meshIP.isEmpty }), !peers.isEmpty {
+                if model.isConnected, !model.requiresReEnrollment,
+                   let peers = model.meshStatus?.peers.filter({ !$0.authorizedRemoteServices.isEmpty }),
+                   !peers.isEmpty {
                     Section(t("远程访问", "Remote access")) {
                         ForEach(peers) { peer in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(peer.name.isEmpty ? peer.meshIP : peer.name).font(.headline)
                                 Text("\(peer.meshIP) · \(peer.platform ?? t("未知平台", "Unknown platform"))")
                                     .font(.caption).foregroundStyle(.secondary)
-                                HStack {
-                                    ForEach(peer.remoteServices ?? []) { service in
-                                        Button(service.kind == "vnc" ? t("屏幕", "Screen") : service.kind.uppercased()) {
-                                            openRemote(service.kind, service.targetMeshIp, service.port)
-                                        }
-                                    }
-                                }
+                                remoteServiceButtons(peer)
                             }
                         }
                         Text(t("目标机器必须已启用对应服务；凭据由所选远程访问应用或系统钥匙串管理。", "The target service must already be enabled. Credentials stay in the selected app or system Keychain."))
@@ -103,12 +121,14 @@ struct ContentView: View {
                     }
                 }
 
-                if let exitClients = model.meshStatus?.exitClients, !exitClients.isEmpty {
+                if model.isConnected, !model.requiresReEnrollment,
+                   let exitClients = model.meshStatus?.exitClients,
+                   !exitClients.isEmpty {
                     Section(t("正在使用本机出口的设备", "Devices using this EXIT")) {
                         ForEach(exitClients) { client in
                             LabeledContent(client.name.isEmpty ? client.meshIP : client.name) {
                                 Text(exitClientState(client.state))
-                                    .foregroundStyle(client.state == "active" ? .green : .secondary)
+                                    .foregroundStyle(client.state == "active" ? RatelMeshBrand.success(for: colorScheme) : .secondary)
                             }
                         }
                     }
@@ -118,6 +138,18 @@ struct ContentView: View {
                     Button(t("地理位置隐私", "Geographic privacy"), systemImage: "location.slash") {
                         showingPrivacy = true
                     }
+                }
+
+                Section(t("支持", "Support")) {
+                    Button(t("一键网络医生", "Network Doctor"), systemImage: "stethoscope") {
+                        showingNetworkDoctor = true
+                    }
+                    Text(t(
+                        "检查连接、生成脱敏报告，并在你确认后执行可回滚的安全修复。",
+                        "Check connectivity, create a redacted report, and run rollback-safe repairs only after you confirm."
+                    ))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("RatelMesh")
@@ -131,6 +163,9 @@ struct ContentView: View {
             .sheet(isPresented: $showingPrivacy) {
                 privacyGuide
             }
+            .sheet(isPresented: $showingNetworkDoctor) {
+                NetworkDoctorView(store: model.networkDoctor, language: language)
+            }
             .onAppear {
                 if !privacyAcknowledged && !model.showingSettings { showingPrivacy = true }
             }
@@ -138,12 +173,12 @@ struct ContentView: View {
                 if !isShowing && !privacyAcknowledged { showingPrivacy = true }
             }
             .alert(t("操作失败", "Operation failed"), isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.clearError() } }
+                get: { model.errorCode != nil },
+                set: { if !$0 { model.acknowledgeError() } }
             )) {
-                Button(t("好", "OK")) { model.clearError() }
+                Button(t("好", "OK")) {}
             } message: {
-                Text(model.errorMessage ?? t("未知错误", "Unknown error"))
+                Text(TunnelErrorCopy.message(for: model.errorCode ?? .unknownProviderError, language: language))
             }
         }
     }
@@ -182,9 +217,46 @@ struct ContentView: View {
     }
 
     private func openRemote(_ scheme: String, _ meshIP: String, _ port: UInt16) {
-        guard ["ssh", "rdp", "vnc"].contains(scheme), !meshIP.isEmpty, port > 0 else { return }
-        let host = meshIP.contains(":") ? "[\(meshIP)]" : meshIP
-        if let url = URL(string: "\(scheme)://\(host):\(port)") { openURL(url) }
+        guard let url = RemoteAccessURL.make(
+            scheme: scheme,
+            address: meshIP,
+            port: port
+        ) else { return }
+        openURL(url)
+    }
+
+    @ViewBuilder
+    private func remoteServiceButtons(_ peer: MobilePeerStatus) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                ForEach(peer.authorizedRemoteServices) { service in
+                    remoteServiceButton(service, peer: peer)
+                }
+            }
+            VStack(alignment: .leading) {
+                ForEach(peer.authorizedRemoteServices) { service in
+                    remoteServiceButton(service, peer: peer)
+                }
+            }
+        }
+    }
+
+    private func remoteServiceButton(
+        _ service: MobileRemoteService,
+        peer: MobilePeerStatus
+    ) -> some View {
+        let label = service.kind == "vnc" ? t("屏幕", "Screen") : service.kind.uppercased()
+        return Button(label) {
+            openRemote(service.kind, service.targetMeshIp, service.port)
+        }
+        .accessibilityLabel(Text(remoteAccessAccessibilityLabel(label, peer: peer)))
+    }
+
+    private func remoteAccessAccessibilityLabel(
+        _ serviceLabel: String,
+        peer: MobilePeerStatus
+    ) -> String {
+        "\(serviceLabel), \(peer.name.isEmpty ? peer.meshIP : peer.name)"
     }
 
     private var statusCard: some View {
@@ -199,6 +271,7 @@ struct ContentView: View {
                     Circle()
                         .fill(model.isConnected ? RatelMeshBrand.cyan : Color.secondary)
                         .frame(width: 9, height: 9)
+                        .accessibilityHidden(true)
                     Text(statusTitle).font(.title2.bold())
                 }
                 .accessibilityElement(children: .combine)
@@ -216,7 +289,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(model.isConnected ? .red : RatelMeshBrand.action(for: colorScheme))
-            .disabled(model.isBusy || model.isTransitioning)
+            .disabled(!model.appGroupReady || model.isBusy || model.isTransitioning)
         }
         .padding(24)
         .frame(maxWidth: .infinity)
@@ -239,6 +312,8 @@ struct ContentView: View {
             if selected { Image(systemName: "checkmark").foregroundStyle(.tint) }
         }
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var settings: some View {
@@ -252,6 +327,8 @@ struct ContentView: View {
                     SecureField(t("一次性入网码", "One-use enrollment code"), text: $model.authKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .textContentType(.oneTimeCode)
+                        .privacySensitive()
                     TextField(t("设备名", "Device name"), text: $model.hostname)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -273,7 +350,10 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(t("取消", "Cancel")) { model.showingSettings = false } }
-                ToolbarItem(placement: .confirmationAction) { Button(t("保存", "Save")) { Task { await model.saveSettings() } } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(t("保存", "Save")) { Task { await model.saveSettings() } }
+                        .disabled(!model.appGroupReady)
+                }
             }
         }
         .interactiveDismissDisabled(model.coordinatorURL.isEmpty)
@@ -290,18 +370,36 @@ struct ContentView: View {
     }
 
     private var statusDetail: String {
+        if model.requiresReEnrollment {
+            return t(
+                "重新入网前，设备流量无法使用 RatelMesh。",
+                "Device traffic is unavailable until enrollment is renewed."
+            )
+        }
+        guard model.isConnected else {
+            return t("设备流量未进入隧道", "Device traffic is not using the tunnel")
+        }
         if let active = model.meshStatus?.activeExit, !active.isEmpty {
             return model.meshStatus?.exitTrafficVerified == true
                 ? f("互联网线路：EXIT 已验证 · %@", "Internet route: EXIT verified · %@", active)
                 : f("已选择 EXIT，正在验证流量 · %@", "EXIT selected; verifying traffic · %@", active)
         }
         if !model.reportedSelectedExit.isEmpty { return f("正在建立 EXIT · %@", "Connecting EXIT · %@", model.reportedSelectedExit) }
-        return model.isConnected ? t("互联网线路：DIRECT 直连", "Internet route: DIRECT") : t("设备流量未进入隧道", "Device traffic is not using the tunnel")
+        return t("互联网线路：DIRECT 直连", "Internet route: DIRECT")
     }
 
     private var shownExit: String { model.requestedExit ?? model.reportedSelectedExit }
 
     private var routeStatus: String {
+        if model.requiresReEnrollment {
+            return t(
+                "重新入网前，设备流量无法使用 RatelMesh。",
+                "Device traffic is unavailable until enrollment is renewed."
+            )
+        }
+        guard model.isConnected else {
+            return t("设备流量未进入隧道", "Device traffic is not using the tunnel")
+        }
         if let requested = model.requestedExit {
             return requested.isEmpty ? t("正在切换到 DIRECT…", "Switching to DIRECT…") : f("正在切换到 EXIT · %@…", "Switching to EXIT · %@…", requested)
         }
@@ -319,6 +417,22 @@ struct ContentView: View {
         case "active": t("已验证", "Verified")
         case "offline": t("离线", "Offline")
         default: t("正在连接", "Connecting")
+        }
+    }
+
+    private var routeIndicatorColor: Color {
+        guard model.isConnected, !model.requiresReEnrollment else { return .secondary }
+        return model.activeExit.isEmpty
+            ? RatelMeshBrand.action(for: colorScheme)
+            : RatelMeshBrand.success(for: colorScheme)
+    }
+
+    private func localizedCoreState(_ state: String) -> String {
+        switch state {
+        case "Running": t("运行中", "Running")
+        case "Starting": t("正在启动", "Starting")
+        case "Stopped": t("已停止", "Stopped")
+        default: t("不可用", "Unavailable")
         }
     }
 

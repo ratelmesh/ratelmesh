@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 // SystemResolver takes over the host's DNS configuration so mesh names resolve

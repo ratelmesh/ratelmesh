@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/transport"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/transport"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // Client is a peer's connection to a relay. It binds under the peer's public
@@ -19,8 +19,9 @@ type Client struct {
 	nc     net.Conn
 	remote net.Addr // resolved TCP peer address (for the kill-switch TCP allow)
 
-	mu     sync.Mutex
-	closed bool
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	closed  bool
 }
 
 // RemoteAddr returns the relay's resolved network address (post-DNS), so callers
@@ -116,10 +117,13 @@ func DialWithAdmission(ctx context.Context, addr string, priv types.Key, tr tran
 // Send relays data to the peer bound as dst.
 func (c *Client) Send(dst types.Key, data []byte) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return net.ErrClosed
 	}
+	c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return writeFrame(c.nc, FrameForward, encodeForward(dst, data))
 }
 
@@ -154,10 +158,14 @@ func (c *Client) Receive(ctx context.Context, fn RecvFunc) error {
 // Close tears down the relay connection.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return nil
 	}
 	c.closed = true
+	c.mu.Unlock()
+	// net.Conn permits Close concurrently with Write. Do not wait for writeMu:
+	// closing the connection is what interrupts a blocked relay send and lets
+	// the bridge reconnect instead of deadlocking behind backpressure.
 	return c.nc.Close()
 }

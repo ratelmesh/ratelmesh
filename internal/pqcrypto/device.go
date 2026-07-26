@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/shan25519/ratelmesh/internal/atomicfile"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/atomicfile"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 const (
@@ -98,38 +98,44 @@ func Encapsulate(publicKey []byte) (sharedKey, ciphertext []byte, err error) {
 	return sharedKey, ciphertext, nil
 }
 
-func (k *DeviceKeys) SignSession(initiatorID, recipientID string, ciphertext []byte) ([]byte, error) {
+func (k *DeviceKeys) SignSession(initiatorID, recipientID string, epoch uint64, ciphertext []byte) ([]byte, error) {
 	sig := make([]byte, mldsa65.SignatureSize)
-	if err := mldsa65.SignTo(k.sign, sessionMessage(initiatorID, recipientID, ciphertext), []byte("RatelMesh-PQSession-v1"), false, sig); err != nil {
+	if epoch == 0 {
+		return nil, fmt.Errorf("PQ session epoch is zero")
+	}
+	if err := mldsa65.SignTo(k.sign, sessionMessage(initiatorID, recipientID, epoch, ciphertext), []byte("RatelMesh-PQSession-v2"), false, sig); err != nil {
 		return nil, err
 	}
 	return sig, nil
 }
 
-func VerifySession(publicKey []byte, initiatorID, recipientID string, ciphertext, signature []byte) bool {
-	if len(publicKey) != mldsa65.PublicKeySize || len(signature) != mldsa65.SignatureSize {
+func VerifySession(publicKey []byte, initiatorID, recipientID string, epoch uint64, ciphertext, signature []byte) bool {
+	if epoch == 0 || len(publicKey) != mldsa65.PublicKeySize || len(signature) != mldsa65.SignatureSize {
 		return false
 	}
 	var key mldsa65.PublicKey
 	if err := key.UnmarshalBinary(publicKey); err != nil {
 		return false
 	}
-	return mldsa65.Verify(&key, sessionMessage(initiatorID, recipientID, ciphertext), []byte("RatelMesh-PQSession-v1"), signature)
+	return mldsa65.Verify(&key, sessionMessage(initiatorID, recipientID, epoch, ciphertext), []byte("RatelMesh-PQSession-v2"), signature)
 }
 
-func sessionMessage(initiatorID, recipientID string, ciphertext []byte) []byte {
+func sessionMessage(initiatorID, recipientID string, epoch uint64, ciphertext []byte) []byte {
 	var b bytes.Buffer
-	for _, field := range [][]byte{[]byte(initiatorID), []byte(recipientID), ciphertext} {
+	for _, field := range [][]byte{[]byte(initiatorID), []byte(recipientID)} {
 		_ = binary.Write(&b, binary.BigEndian, uint32(len(field)))
 		_, _ = b.Write(field)
 	}
+	_ = binary.Write(&b, binary.BigEndian, epoch)
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(ciphertext)))
+	_, _ = b.Write(ciphertext)
 	return b.Bytes()
 }
 
 // DeriveWireGuardPSK binds the KEM secret to both authenticated node identities,
 // both WireGuard keys, and the recipient's KEM key. Reusing a ciphertext in a
 // different pair or after a key rotation therefore produces a different PSK.
-func DeriveWireGuardPSK(shared []byte, initiatorID, recipientID string, initiatorWG, recipientWG types.Key, recipientKEM []byte) types.Key {
+func DeriveWireGuardPSK(shared []byte, initiatorID, recipientID string, epoch uint64, initiatorWG, recipientWG types.Key, recipientKEM []byte) types.Key {
 	h := sha256.New()
 	_, _ = h.Write([]byte("RatelMesh-WireGuard-MLKEM768-v1\x00"))
 	for _, field := range [][]byte{[]byte(initiatorID), []byte(recipientID), initiatorWG[:], recipientWG[:], recipientKEM} {
@@ -138,6 +144,9 @@ func DeriveWireGuardPSK(shared []byte, initiatorID, recipientID string, initiato
 		_, _ = h.Write(size[:])
 		_, _ = h.Write(field)
 	}
+	var epochBytes [8]byte
+	binary.BigEndian.PutUint64(epochBytes[:], epoch)
+	_, _ = h.Write(epochBytes[:])
 	salt := h.Sum(nil)
 	extract := hmac.New(sha256.New, salt)
 	_, _ = extract.Write(shared)

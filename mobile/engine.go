@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 // bindingEngine is the mobile data-plane boundary. The Go daemon owns control

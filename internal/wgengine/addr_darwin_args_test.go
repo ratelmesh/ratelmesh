@@ -44,3 +44,14 @@ func TestDarwinTunnelMTUAvoidsNestedPathBlackholes(t *testing.T) {
 		t.Fatalf("darwin tunnel MTU = %d, want path-safe 1280", darwinTunnelMTU)
 	}
 }
+
+func TestLinuxInterfaceUpSetsPathSafeMTU(t *testing.T) {
+	commands := interfaceUpPlan("linux", "ratelmesh0")
+	want := [][]string{
+		{"link", "set", "dev", "ratelmesh0", "mtu", "1280"},
+		{"link", "set", "dev", "ratelmesh0", "up"},
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("Linux interface-up plan = %v, want %v", commands, want)
+	}
+}

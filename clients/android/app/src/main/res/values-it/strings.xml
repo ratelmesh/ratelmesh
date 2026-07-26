@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">Accetta e continua</string>
     <string name="vpn_disclosure_decline">Non adesso</string>
     <string name="error_android_closed_vpn">Android ha chiuso il tunnel VPN</string>
+    <string name="error_connection_failed">Impossibile connettersi. Controlla la rete e le impostazioni, quindi riprova.</string>
     <string name="error_coordinator_required">L\'URL del coordinatore è obbligatorio</string>
     <string name="error_device_required">Il nome del dispositivo è obbligatorio</string>
     <string name="error_state_directory">Impossibile creare la directory di stato protetta</string>

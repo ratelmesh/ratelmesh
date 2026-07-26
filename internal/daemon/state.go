@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shan25519/ratelmesh/internal/atomicfile"
-	"github.com/shan25519/ratelmesh/internal/control"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/atomicfile"
+	"github.com/ratelmesh/ratelmesh/internal/control"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // persistentState is the small amount of identity ratelmeshd keeps across restarts:
@@ -40,9 +40,35 @@ const (
 	fallbackFile = "internet-fallback"
 	netmapFile   = "netmap-lkg.json"
 	pqSecretFile = "pq-session-secrets.json"
+	cleanupFile  = "cleanup-pending"
 )
 
+func cleanupPendingState(dir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(dir, cleanupFile))
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+func persistCleanupPending(dir string) error {
+	return atomicfile.WriteFile(filepath.Join(dir, cleanupFile), []byte("v1\n"))
+}
+
+func clearCleanupPending(dir string) error {
+	err := os.Remove(filepath.Join(dir, cleanupFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 type pqSecretRecord struct {
+	Epoch          uint64 `json:"epoch"`
 	CiphertextHash string `json:"ciphertextHash"`
 	SharedKey      string `json:"sharedKey"`
 }

@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">接受並繼續</string>
     <string name="vpn_disclosure_decline">暫不</string>
     <string name="error_android_closed_vpn">Android 已關閉 VPN 通道</string>
+    <string name="error_connection_failed">無法連線。請檢查網路和設定後再試一次。</string>
     <string name="error_coordinator_required">請輸入協調器位址</string>
     <string name="error_device_required">請輸入裝置名稱</string>
     <string name="error_state_directory">無法建立受保護的狀態目錄</string>

@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "French", "code": "fr" },
   "status.state": "Etat :   {state}",
+  "status.cleanup.pending": "Avertissement : le nettoyage réseau est incomplet. Redémarrez RatelMesh ; si le problème persiste, exécutez `ratelmesh doctor`.",
   "status.coord": "Coord :   {coord}",
   "status.self": "Soi :    {ip}  {name}  ({key})",
   "status.exit.active": "Sortie :    {name} (tout le trafic acheminé via cette sortie)",

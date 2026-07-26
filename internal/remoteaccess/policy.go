@@ -53,7 +53,8 @@ type SignedPolicyState struct {
 // monotonic floor. Equal-version state must retain this digest.
 type VerifiedPolicyState struct {
 	PolicyState
-	Digest string `json:"digest"`
+	Digest     string    `json:"digest"`
+	ObservedAt time.Time `json:"observedAt,omitempty"`
 }
 
 // PolicyPayloadDigest identifies one exact signed policy payload. It does not
@@ -132,7 +133,7 @@ func VerifyPolicyState(signed SignedPolicyState, verifier Verifier, tenantID str
 	if err != nil {
 		return VerifiedPolicyState{}, err
 	}
-	return VerifiedPolicyState{PolicyState: state, Digest: digest}, nil
+	return VerifiedPolicyState{PolicyState: state, Digest: digest, ObservedAt: now.UTC()}, nil
 }
 
 func ensureJSONEOF(dec *json.Decoder) error {
@@ -162,6 +163,15 @@ func checkPolicyAdvance(current VerifiedPolicyState, ok bool, next VerifiedPolic
 	if next.Version < current.Version {
 		return ErrPolicyRollback
 	}
+	// A strictly newer authority-signed policy is the recovery boundary for a
+	// device whose local clock jumped far into the future. Keeping the old
+	// observation across versions would permanently deny every later grant.
+	// Equal-version observations remain monotonic, so replaying the same signed
+	// policy cannot move time backwards and revive an expired grant.
+	if next.Version == current.Version && !current.ObservedAt.IsZero() &&
+		(next.ObservedAt.IsZero() || next.ObservedAt.Before(current.ObservedAt)) {
+		return ErrPolicyRollback
+	}
 	if next.Version == current.Version &&
 		(next.Digest != current.Digest || next.Enabled != current.Enabled || !next.IssuedAt.Equal(current.IssuedAt)) {
 		return ErrPolicyConflict
@@ -174,7 +184,41 @@ func samePolicyState(current, next VerifiedPolicyState) bool {
 		current.Version == next.Version &&
 		current.Digest == next.Digest &&
 		current.Enabled == next.Enabled &&
-		current.IssuedAt.Equal(next.IssuedAt)
+		current.IssuedAt.Equal(next.IssuedAt) &&
+		current.ObservedAt.Equal(next.ObservedAt)
+}
+
+// PolicyTimeFloor returns a wall time that never moves behind the last
+// successfully persisted policy observation. It prevents a clock rollback
+// across process restart from making an already-expired temporary grant appear
+// valid again.
+func PolicyTimeFloor(store PolicyFloorStore, tenantID string, now time.Time) (time.Time, error) {
+	if store == nil || tenantID == "" || now.IsZero() {
+		return time.Time{}, ErrInvalidVerificationContext
+	}
+	current, ok, err := store.Load(tenantID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	now = now.UTC()
+	if ok && current.ObservedAt.After(now) {
+		return current.ObservedAt.UTC(), nil
+	}
+	return now, nil
+}
+
+// ObservePolicyAt records the actual local observation time for an initial or
+// strictly newer signed policy. Verification may have used a persisted future
+// floor to keep old grants expired; carrying that artificial time into a newer
+// policy would prevent the signed recovery boundary from taking effect.
+func ObservePolicyAt(next VerifiedPolicyState, current VerifiedPolicyState, exists bool, now time.Time) (VerifiedPolicyState, error) {
+	if now.IsZero() {
+		return VerifiedPolicyState{}, ErrInvalidVerificationContext
+	}
+	if !exists || next.Version > current.Version {
+		next.ObservedAt = now.UTC()
+	}
+	return next, nil
 }
 
 func isCanonicalPolicyDigest(digest string) bool {

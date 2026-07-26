@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/magicsock"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/magicsock"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 type sequenceDiscoverer struct {

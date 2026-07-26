@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/dns"
+	"github.com/ratelmesh/ratelmesh/internal/dns"
 )
 
 type cacheCountingResolver struct{ flushes int }

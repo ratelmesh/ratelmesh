@@ -20,20 +20,20 @@ import (
 	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/shan25519/ratelmesh/internal/control"
-	"github.com/shan25519/ratelmesh/internal/dns"
-	"github.com/shan25519/ratelmesh/internal/exitstack"
-	"github.com/shan25519/ratelmesh/internal/georegion"
-	"github.com/shan25519/ratelmesh/internal/magicsock"
-	"github.com/shan25519/ratelmesh/internal/netguard"
-	"github.com/shan25519/ratelmesh/internal/pqcrypto"
-	"github.com/shan25519/ratelmesh/internal/relay"
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/routing"
-	"github.com/shan25519/ratelmesh/internal/sign"
-	"github.com/shan25519/ratelmesh/internal/transport"
-	"github.com/shan25519/ratelmesh/internal/types"
-	"github.com/shan25519/ratelmesh/internal/wgengine"
+	"github.com/ratelmesh/ratelmesh/internal/control"
+	"github.com/ratelmesh/ratelmesh/internal/dns"
+	"github.com/ratelmesh/ratelmesh/internal/exitstack"
+	"github.com/ratelmesh/ratelmesh/internal/georegion"
+	"github.com/ratelmesh/ratelmesh/internal/magicsock"
+	"github.com/ratelmesh/ratelmesh/internal/netguard"
+	"github.com/ratelmesh/ratelmesh/internal/pqcrypto"
+	"github.com/ratelmesh/ratelmesh/internal/relay"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/routing"
+	"github.com/ratelmesh/ratelmesh/internal/sign"
+	"github.com/ratelmesh/ratelmesh/internal/transport"
+	"github.com/ratelmesh/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
 
 // meshCIDR is the mesh address space; exit NAT masquerades traffic from it.
@@ -46,6 +46,9 @@ var (
 	// ErrNetmapEquivocation means two different configurations claim the same
 	// version. Accepting either would make version-based convergence ambiguous.
 	ErrNetmapEquivocation = errors.New("different netmaps claim the same version")
+	// ErrNetmapIdentity means the coordinator returned a netmap whose Self
+	// identity is not bound to this daemon's persisted node key and node ID.
+	ErrNetmapIdentity = errors.New("netmap self identity rejected")
 )
 
 // Config configures an ratelmeshd instance.
@@ -150,7 +153,10 @@ type Daemon struct {
 	cfg    Config
 	log    *slog.Logger
 	client *control.Client
-	engine wgengine.Engine
+
+	doctorOnce sync.Once
+	doctor     *NetworkDoctor
+	engine     wgengine.Engine
 	// applyMu serializes prepare/apply/commit so a poll, relay callback and local
 	// API request cannot interleave candidate state while programming the engine.
 	applyMu sync.Mutex
@@ -295,6 +301,10 @@ func New(cfg Config) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load physical machine identity: %w", err)
 	}
+	cleanupPending, err := cleanupPendingState(cfg.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("read cleanup state: %w", err)
+	}
 	remotePolicyStore := cfg.RemoteAccessPolicyStore
 	if remotePolicyStore == nil && len(cfg.VerifyKey) > 0 {
 		remotePolicyStore, err = remoteaccess.NewFilePolicyFloorStore(cfg.StateDir, "remote-access-policy.json")
@@ -352,6 +362,7 @@ func New(cfg Config) (*Daemon, error) {
 		CoordURL:           cfg.CoordURL,
 		InternetFallback:   st.InternetFallback,
 		EnrollmentRequired: enrollmentRequired(st.NodeID, st.SessionToken, cfg.AuthKey),
+		CleanupPending:     cleanupPending,
 	}
 	return d, nil
 }
@@ -393,7 +404,7 @@ func (d *Daemon) PublicKey() types.Key { return d.priv.Public() }
 
 // Run brings the daemon up and blocks until ctx is cancelled, maintaining the
 // registration + long-poll loop with reconnect/backoff.
-func (d *Daemon) Run(ctx context.Context) error {
+func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.runCtx = ctx
 	d.mu.Unlock()
@@ -415,6 +426,51 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.log.Debug("startup STUN discovery failed", "err", err)
 		}
 	}
+	// Write the cleanup intent before the first data-plane mutation. A SIGKILL,
+	// power loss, or process crash after Up/route/firewall changes therefore
+	// leaves a durable instruction for the next launch instead of an
+	// unobservable half-installed network plan.
+	if err := persistCleanupPending(d.cfg.StateDir); err != nil {
+		return fmt.Errorf("persist write-ahead cleanup intent: %w", err)
+	}
+	d.mu.Lock()
+	d.status.CleanupPending = true
+	d.mu.Unlock()
+	if preparer, ok := d.engine.(wgengine.PersistentCleanupPreparer); ok {
+		if err := preparer.PreparePersistentCleanup(d.cfg.StateDir); err != nil {
+			return fmt.Errorf("reconcile persistent data-plane cleanup: %w", err)
+		}
+	}
+	defer func() {
+		var cleanupErr error
+		if err := d.engine.Down(); err != nil {
+			cleanupErr = fmt.Errorf("data-plane teardown incomplete: %w", err)
+			// Keep the managed firewall armed. Clearing a kill switch while
+			// routes or the tunnel may still be present would turn an
+			// incomplete teardown into a traffic-leak window.
+			d.log.Error("data-plane teardown incomplete; retaining managed firewall", "err", err)
+		} else if err := d.guard.Clear(); err != nil {
+			cleanupErr = fmt.Errorf("managed firewall teardown incomplete: %w", err)
+			d.log.Error("managed firewall teardown incomplete", "err", err)
+		}
+		if cleanupErr != nil {
+			d.mu.Lock()
+			d.status.CleanupPending = true
+			d.mu.Unlock()
+			runErr = errors.Join(runErr, cleanupErr)
+			return
+		}
+		if err := clearCleanupPending(d.cfg.StateDir); err != nil {
+			d.mu.Lock()
+			d.status.CleanupPending = true
+			d.mu.Unlock()
+			runErr = errors.Join(runErr, fmt.Errorf("clear cleanup state: %w", err))
+			return
+		}
+		d.mu.Lock()
+		d.status.CleanupPending = false
+		d.mu.Unlock()
+	}()
 	if err := d.engine.Up(); err != nil {
 		return err
 	}
@@ -442,12 +498,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 		defer close(remoteExpiryDone)
 		d.remoteTargetExpiryLoop(remoteExpiryCtx)
 	}()
-	defer func() {
-		if err := d.guard.Clear(); err != nil {
-			d.log.Warn("managed firewall teardown failed", "err", err)
-		}
-	}()
-	defer d.engine.Down()
 	defer func() {
 		stopRemoteExpiry()
 		<-remoteExpiryDone
@@ -754,6 +804,9 @@ func (d *Daemon) applyNetmap(nm types.Netmap) error {
 }
 
 func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
+	if err := d.validateSelfIdentity(nm.Self); err != nil {
+		return false, err
+	}
 	d.mu.Lock()
 	preferred := d.preferredExit
 	ctx := d.runCtx
@@ -862,6 +915,7 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 	}
 	peerCandidates := make([]peerCandidate, 0, len(nm.Peers))
 	for _, p := range nm.Peers {
+		p.Endpoints = safePeerEndpoints(p.Endpoints)
 		// epKey describes only coordinator-advertised state. Locally reordering
 		// candidates must not masquerade as a peer roam and reset the path trial on
 		// every apply.
@@ -888,14 +942,19 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 			// migration case. Once RouteSig is present it is mandatory and may not
 			// be stripped or altered without dropping the peer.
 			badRouteSig := len(p.RouteSig) > 0 && !sign.VerifyRoutes(d.cfg.VerifyKey, p, p.RouteSig)
-			if !sign.Verify(d.cfg.VerifyKey, p, p.Sig) || badRouteSig {
+			badCapabilitySig := (p.Capabilities.Exit || p.Capabilities.Relay) &&
+				!sign.VerifyCapabilities(d.cfg.VerifyKey, p, p.CapabilitySig)
+			if !sign.Verify(d.cfg.VerifyKey, p, p.Sig) || badRouteSig || badCapabilitySig {
 				d.log.Warn("dropping peer: bad authority or route signature", "name", p.Name, "key", p.Key.ShortString())
 				continue
 			}
 			legacyUnsignedRoutes = len(p.RouteSig) == 0
 		}
 		if d.cfg.VerifyPQKey != nil {
-			if !sign.VerifyPQ(d.cfg.VerifyPQKey, p, p.PQSig) || !sign.VerifyRoutesPQ(d.cfg.VerifyPQKey, p, p.PQRouteSig) {
+			badCapabilitySig := (p.Capabilities.Exit || p.Capabilities.Relay) &&
+				!sign.VerifyCapabilitiesPQ(d.cfg.VerifyPQKey, p, p.PQCapabilitySig)
+			if !sign.VerifyPQ(d.cfg.VerifyPQKey, p, p.PQSig) ||
+				!sign.VerifyRoutesPQ(d.cfg.VerifyPQKey, p, p.PQRouteSig) || badCapabilitySig {
 				d.log.Warn("dropping peer: bad ML-DSA authority or route signature", "name", p.Name, "key", p.Key.ShortString())
 				continue
 			}
@@ -1175,6 +1234,38 @@ func (d *Daemon) applyNetmapLocked(nm types.Netmap) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (d *Daemon) validateSelfIdentity(self types.Node) error {
+	d.mu.Lock()
+	nodeID := d.nodeID
+	d.mu.Unlock()
+	if nodeID == "" {
+		return nil
+	}
+	if self.ID != nodeID {
+		return fmt.Errorf("%w: self ID %q does not match persisted node ID %q", ErrNetmapIdentity, self.ID, nodeID)
+	}
+	if self.Key != d.priv.Public() {
+		return fmt.Errorf("%w: self key does not match device identity", ErrNetmapIdentity)
+	}
+	if d.cfg.VerifyKey != nil {
+		badRouteSig := len(self.RouteSig) > 0 && !sign.VerifyRoutes(d.cfg.VerifyKey, self, self.RouteSig)
+		badCapabilitySig := (self.Capabilities.Exit || self.Capabilities.Relay) &&
+			!sign.VerifyCapabilities(d.cfg.VerifyKey, self, self.CapabilitySig)
+		if !sign.Verify(d.cfg.VerifyKey, self, self.Sig) || badRouteSig || badCapabilitySig {
+			return fmt.Errorf("%w: bad authority or route signature", ErrNetmapIdentity)
+		}
+	}
+	if d.cfg.VerifyPQKey != nil {
+		badCapabilitySig := (self.Capabilities.Exit || self.Capabilities.Relay) &&
+			!sign.VerifyCapabilitiesPQ(d.cfg.VerifyPQKey, self, self.PQCapabilitySig)
+		if !sign.VerifyPQ(d.cfg.VerifyPQKey, self, self.PQSig) ||
+			!sign.VerifyRoutesPQ(d.cfg.VerifyPQKey, self, self.PQRouteSig) || badCapabilitySig {
+			return fmt.Errorf("%w: bad ML-DSA authority or route signature", ErrNetmapIdentity)
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) enableExitNAT() {
@@ -1470,6 +1561,15 @@ func probeCandidateEndpoints(raw []string) []netip.AddrPort {
 	return out
 }
 
+func safePeerEndpoints(raw []string) []string {
+	candidates := probeCandidateEndpoints(raw)
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.String())
+	}
+	return out
+}
+
 var meshIPv4Prefix = netip.MustParsePrefix("100.64.0.0/10")
 
 // preferSameNATPrivateEndpoints returns a stable copy of peerEndpoints. When
@@ -1545,12 +1645,6 @@ func (d *Daemon) currentPathType(k types.Key) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.pathType[k]
-}
-
-func (d *Daemon) setPathType(k types.Key, pt string) {
-	d.mu.Lock()
-	d.pathType[k] = pt
-	d.mu.Unlock()
 }
 
 // peerEndpoints returns the WireGuard endpoints to use for a peer and whether the
@@ -1630,7 +1724,7 @@ func (d *Daemon) ensureRelay(ctx context.Context, addrs []string) (connected boo
 		break
 	}
 	if rc == nil {
-		d.log.Error("no advertised relay reachable; continuing without relay fallback", "tried", addrs)
+		d.log.Error("no advertised relay reachable; continuing without relay fallback", "tried", relaySpecAddresses(addrs))
 		return false
 	}
 
@@ -1744,7 +1838,7 @@ func containsStr(ss []string, s string) bool {
 // camouflage transport is appended pipe-delimited (§5, §8):
 //
 //	host:port|obfs|<pre-shared-secret>
-//	host:port|tlscamo|<server-name>
+//	host:port|tlscamo|<server-name>  (legacy; fails closed without a cert pin)
 //	host:port|wscamo|<server-name>
 //	host:port|wss|<server-name>      (ws-camo inside TLS; hides Host, blends with HTTPS)
 func parseRelaySpec(spec string) (addr string, tr transport.Transport, clientSecret []byte) {
@@ -1770,8 +1864,19 @@ func parseRelaySpec(spec string) (addr string, tr transport.Transport, clientSec
 	case "wss":
 		return addr, transport.NewWSSCamoClient(param), clientSecret
 	default:
-		return addr, transport.Plain{}, clientSecret
+		return addr, transport.New(parts[1], []byte(param)), clientSecret
 	}
+}
+
+func relaySpecAddresses(specs []string) []string {
+	addrs := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		addr, _, _ := strings.Cut(spec, "|")
+		if addr != "" {
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs
 }
 
 // relayReconnectLoop keeps the fallback relay connected: whenever the bridge is
@@ -3068,7 +3173,7 @@ func (d *Daemon) portMappingLoop(ctx context.Context) {
 // that kernel/wireguard-go owns (docs/relay-upgrade-probe.md). ok is false when
 // ListenPort is 65535 (no room for +1 without wrapping to an invalid port 0).
 func discoPort(listenPort uint16) (uint16, bool) {
-	if listenPort >= 65535 {
+	if listenPort == 65535 {
 		return 0, false
 	}
 	return listenPort + 1, true

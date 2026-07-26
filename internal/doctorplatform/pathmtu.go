@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
 )
 
 const (
@@ -371,17 +371,6 @@ func legacyNumericAddress(host string) bool {
 		}
 	}
 	return true
-}
-
-func pathMTUDestinationFamily(dst string) (pathMTUFamily, error) {
-	addr, hostname, err := parsePathMTUDestination(dst)
-	if err != nil {
-		return 0, err
-	}
-	if hostname != "" || addr.Is4() {
-		return pathMTUV4, nil
-	}
-	return pathMTUV6, nil
 }
 
 func runtimePathMTUPlatform(goos string) pathMTUPlatform {

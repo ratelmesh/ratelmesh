@@ -73,13 +73,15 @@ type Policy struct {
 	RemoteMeshPrefixes []netip.Prefix
 }
 
-// DefaultAllowCIDRs returns the always-allowed ranges: loopback, mesh, and
-// private LAN space (so the user keeps local connectivity under the kill switch).
+// DefaultAllowCIDRs returns the ranges allowed directly on the physical link:
+// loopback, private LAN space and IPv6 link-local. The mesh CGNAT range is
+// deliberately absent. Mesh packets are allowed by TunnelInterface instead;
+// allowing 100.64.0.0/10 independent of interface would leak them to an ISP
+// using CGNAT whenever a more-specific mesh route disappeared.
 func DefaultAllowCIDRs() []netip.Prefix {
 	return []netip.Prefix{
 		netip.MustParsePrefix("127.0.0.0/8"),
 		netip.MustParsePrefix("::1/128"),
-		netip.MustParsePrefix("100.64.0.0/10"), // mesh
 		netip.MustParsePrefix("10.0.0.0/8"),
 		netip.MustParsePrefix("172.16.0.0/12"),
 		netip.MustParsePrefix("192.168.0.0/16"),

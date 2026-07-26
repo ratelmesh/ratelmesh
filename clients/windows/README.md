@@ -23,7 +23,10 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\clients\windows\Package.ps1 -Arch amd64
 ```
 
-The bundle is written below `clients\windows\dist`. `Package.ps1` also emits SHA-256 hashes.
+The bundle is written below `clients\windows\dist`. `Package.ps1` publishes it
+atomically after verifying the requested architecture, emits SHA-256 hashes,
+and records the version, architecture and Go toolchain in
+`BUILD-METADATA.json`.
 
 For a release bundle, pass a code-signing certificate thumbprint. The packager
 finds it in the current-user or local-machine certificate store, signs both
@@ -50,7 +53,11 @@ $key = Read-Host 'Auth key' -AsSecureString
   -EnableGui
 ```
 
-If WireGuard is not installed, install it first or pass its official signed installer with `-WireGuardInstaller`. The installer signature is checked before execution.
+Before making privileged changes, the installer verifies every bundle file
+against `SHA256SUMS.txt` and rejects linked, missing, duplicate or unexpected
+files. If WireGuard is not installed, install it first or pass its official
+signed installer with `-WireGuardInstaller`. The installer signature and
+publisher are checked before execution.
 
 MagicDNS is enabled by default. The installer starts the local resolver on
 `127.0.0.1:53`; WireGuard for Windows installs that address on the tunnel
@@ -71,7 +78,12 @@ requires the scheduled task's administrator rights.
 
 `-KillSwitch` preserves `/0` routes so the official WireGuard tunnel service activates its Windows firewall kill switch. Without it, defaults are split into `/1` routes, allowing configured direct-route exceptions. Windows direct-route exceptions and `-KillSwitch` are mutually exclusive because the official firewall intentionally blocks bypass traffic.
 
-The auth key is protected with current-user DPAPI. Config, binaries, logs, and device state are placed below the current user's LocalAppData with ACLs limited to that user, Administrators, and LocalSystem. The scheduled task uses `Interactive` logon at `Highest` privilege; it does not run before that user logs on.
+The auth key is protected with current-user DPAPI. Config, binaries, logs, and
+device state are placed below the current user's LocalAppData. Files executed
+by the highest-privilege scheduled task are read/execute-only for that user;
+only Administrators and LocalSystem can modify them. The scheduled task uses
+`Interactive` logon at `Highest` privilege; it does not run before that user
+logs on.
 
 Open a new terminal after installation:
 
@@ -83,13 +95,19 @@ ratelmesh exit use <name>
 ```
 
 Logs are in `%LOCALAPPDATA%\RatelMesh\state\logs\ratelmeshd.log`. The optional GUI is at <http://127.0.0.1:8088>.
-`-Language` accepts `system`, `en`, `zh-Hans` or `ja` and persists the CLI
-choice for the signed-in Windows user. A one-command override is also available
-through `ratelmesh --lang <locale> ...`.
+`-Language` accepts `system`, `en`, `es`, `de`, `fr`, `ja`, `ko`, `it`, `nl`,
+`pl`, `sv`, `pt-BR`, `zh-Hans` or `zh-Hant`. It persists the CLI choice for the
+signed-in Windows user and selects the matching privacy prompt. A one-command
+override is also available through `ratelmesh --lang <locale> ...`.
 
 ## Upgrade or remove
 
-Run the install command again to replace binaries and update the task while retaining the encrypted auth key when `-AuthKey` is omitted.
+Run the install command again to replace binaries and update the task. When an
+option is omitted, the installer retains the existing hostname, routing,
+kill-switch, DNS, GUI, language, role, state path and encrypted auth-key
+settings. Pass an option explicitly only when you intend to change it. Upgrade
+stages and verifies all inputs before stopping the old daemon; if publication,
+task registration or startup fails, it restores the previous files and task.
 
 ```powershell
 .\Uninstall-RatelMesh.ps1
@@ -98,6 +116,8 @@ Run the install command again to replace binaries and update the task while reta
 ```
 
 Uninstall keeps WireGuard for Windows because other tunnels may depend on it.
+It refuses to remove the task until the RatelMesh tunnel, route ledger and named
+WinNAT state have been cleaned up, and restarts the prior task if cleanup fails.
 
 ## Current limits
 

@@ -135,13 +135,7 @@ func (r Report) MarshalJSON() ([]byte, error) {
 		},
 	}
 	for _, f := range r.Findings {
-		w.Findings = append(w.Findings, findingWire{
-			Code:     f.Code,
-			Severity: f.Severity,
-			Probe:    f.Probe,
-			Summary:  f.Summary,
-			Evidence: f.Evidence,
-		})
+		w.Findings = append(w.Findings, findingWire(f))
 	}
 	for _, p := range r.Probes {
 		w.Probes = append(w.Probes, probeWire{

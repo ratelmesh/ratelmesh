@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "English", "code": "en" },
   "status.state": "State:   {state}",
+  "status.cleanup.pending": "Warning: network cleanup is incomplete. Restart RatelMesh; if this remains, run `ratelmesh doctor`.",
   "status.coord": "Coord:   {coord}",
   "status.self": "Self:    {ip}  {name}  ({key})",
   "status.exit.active": "Exit:    {name} (all traffic routed via this exit)",

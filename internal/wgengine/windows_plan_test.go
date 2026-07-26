@@ -2,10 +2,11 @@ package wgengine
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func TestPlanWindowsRoutesForFullTunnel(t *testing.T) {
@@ -65,6 +66,88 @@ func TestPlanWindowsRoutesDedupsAndSkipsUnparseablePins(t *testing.T) {
 	got := planWindowsRoutes(cfg)
 	if len(got.pins) != 1 {
 		t.Fatalf("endpoint pins = %v, want one deduped pin", got.pins)
+	}
+}
+
+func TestPlanWindowsRoutesUsesRenderableEndpointForIPv6OnlyExit(t *testing.T) {
+	endpoint := netip.MustParseAddr("2001:db8::7")
+	physical := netip.MustParseAddr("2001:db8::44")
+	cfg := Config{
+		Peers: []Peer{{
+			Endpoints: []string{
+				"malformed-first-candidate",
+				"[2001:db8::7]:51820",
+			},
+			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("::/0")},
+		}},
+		PhysicalEndpoints: []netip.Addr{physical},
+		DirectRoutes:      []netip.Prefix{netip.MustParsePrefix("2001:db8:100::/48")},
+		BlockRoutes:       []netip.Prefix{netip.MustParsePrefix("2001:db8:200::/48")},
+	}
+
+	plan := planWindowsRoutes(cfg)
+	if !plan.hasDefault {
+		t.Fatal("IPv6-only EXIT was not detected")
+	}
+	if len(plan.pins) != 2 || plan.pins[0] != endpoint || plan.pins[1] != physical {
+		t.Fatalf("IPv6 pins = %v, want renderable endpoint then physical endpoint", plan.pins)
+	}
+	if !slices.Equal(plan.direct, cfg.DirectRoutes) || !slices.Equal(plan.block, cfg.BlockRoutes) {
+		t.Fatalf("IPv6 route overrides were dropped: direct=%v block=%v", plan.direct, plan.block)
+	}
+	rendered := windowsTunnelConfig(cfg)
+	if !strings.Contains(rendered, "::/1") || !strings.Contains(rendered, "8000::/1") ||
+		strings.Contains(rendered, "::/0") {
+		t.Fatalf("IPv6-only EXIT was not rendered as split defaults:\n%s", rendered)
+	}
+}
+
+func TestPlanWindowsRoutesIgnoresUncapturedPhysicalFamily(t *testing.T) {
+	ipv4Endpoint := netip.MustParseAddr("203.0.113.7")
+	ipv4Physical := netip.MustParseAddr("192.0.2.44")
+	ipv6Physical := netip.MustParseAddr("2001:db8::44")
+	ipv4Direct := netip.MustParsePrefix("192.168.0.0/16")
+	ipv6Direct := netip.MustParsePrefix("2001:db8:100::/48")
+	cfg := Config{
+		Peers: []Peer{{
+			Endpoints:  []string{"203.0.113.7:51820"},
+			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")},
+		}},
+		PhysicalEndpoints: []netip.Addr{ipv4Physical, ipv6Physical},
+		DirectRoutes:      []netip.Prefix{ipv4Direct, ipv6Direct},
+		BlockRoutes: []netip.Prefix{
+			netip.MustParsePrefix("198.18.0.0/15"),
+			netip.MustParsePrefix("2001:db8:200::/48"),
+		},
+	}
+
+	plan := planWindowsRoutes(cfg)
+	if !plan.default4 || plan.default6 {
+		t.Fatalf("captured families = IPv4:%v IPv6:%v", plan.default4, plan.default6)
+	}
+	if !slices.Equal(plan.pins, []netip.Addr{ipv4Endpoint, ipv4Physical}) {
+		t.Fatalf("mixed-family physical pins = %v, want only reachable IPv4 pins", plan.pins)
+	}
+	if !slices.Equal(plan.direct, []netip.Prefix{ipv4Direct}) {
+		t.Fatalf("mixed-family direct routes = %v, want only IPv4", plan.direct)
+	}
+	if len(plan.block) != 1 || !plan.block[0].Addr().Is4() {
+		t.Fatalf("mixed-family block routes = %v, want only rendered IPv4 family", plan.block)
+	}
+}
+
+func TestSelectWindowsPhysicalDefaultUsesTotalMetricAndStableTieBreak(t *testing.T) {
+	output := strings.Join([]string{
+		"3|192.0.2.3|1|1|0",     // cheapest but disconnected.
+		"12|192.0.2.12|5|100|1", // lexicographically best RouteMetric, worse total.
+		"9|192.0.2.9|50|10|1",   // total 60, loses interface-index tie.
+		"7|192.0.2.70|40|20|1",  // total 60, same interface, loses next-hop tie.
+		"7|192.0.2.7|30|30|1",   // total 60, stable winner.
+		"malformed",
+	}, "\n")
+	gateway, device, ok := selectWindowsPhysicalDefault(output)
+	if !ok || gateway != netip.MustParseAddr("192.0.2.7") || device != "7" {
+		t.Fatalf("Windows physical default = %s/%q/%v, want 192.0.2.7/7/true", gateway, device, ok)
 	}
 }
 

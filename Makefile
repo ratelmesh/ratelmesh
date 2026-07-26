@@ -1,16 +1,16 @@
-.PHONY: build build-wgreal build-windows mobile-ios mobile-android test vet clean
+.PHONY: build build-wgreal build-windows mobile-ios mobile-android release-ios release-android test vet clean run-coord
 
 BIN := bin
 PKGS := ./...
 
 build:
-	mkdir -p $(BIN)
+	go build -o $(BIN)/ratelmesh-coord ./cmd/ratelmesh-coord
 	go build -o $(BIN)/ratelmeshd ./cmd/ratelmeshd
 	go build -o $(BIN)/ratelmesh ./cmd/ratelmesh
-	go build -o $(BIN)/ratelmesh-pqverify ./cmd/ratelmesh-pqverify
 
+# Real WireGuard data plane. Requires `wireguard-go` and `wg` on PATH at runtime
+# and elevated privileges to create the TUN device.
 build-wgreal:
-	mkdir -p $(BIN)
 	go build -tags wgreal -o $(BIN)/ratelmeshd ./cmd/ratelmeshd
 
 build-windows:
@@ -24,8 +24,16 @@ mobile-ios:
 mobile-android:
 	./clients/android/scripts/build-ratelmesh-mobile.sh
 
+release-ios:
+	@test -n "$(VERSION)" || { echo "usage: make release-ios VERSION=X.Y.Z BUILD=N" >&2; exit 2; }
+	@test -n "$(BUILD)" || { echo "usage: make release-ios VERSION=X.Y.Z BUILD=N" >&2; exit 2; }
+	./clients/ios/Scripts/archive.sh "$(VERSION)" "$(BUILD)"
+
+release-android:
+	./clients/android/scripts/bundle-release.sh
+
 test:
-	go test -race $(PKGS)
+	go test $(PKGS)
 
 vet:
 	go vet $(PKGS)
@@ -33,3 +41,6 @@ vet:
 
 clean:
 	rm -rf $(BIN)
+
+run-coord: build
+	$(BIN)/ratelmesh-coord -addr 127.0.0.1:8080

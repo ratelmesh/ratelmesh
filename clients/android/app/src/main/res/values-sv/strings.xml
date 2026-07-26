@@ -69,6 +69,7 @@
     <string name="vpn_disclosure_accept">Godkänn och fortsätt</string>
     <string name="vpn_disclosure_decline">Inte nu</string>
     <string name="error_android_closed_vpn">Android stängde VPN-tunneln</string>
+    <string name="error_connection_failed">Det gick inte att ansluta. Kontrollera nätverket och inställningarna och försök igen.</string>
     <string name="error_coordinator_required">Koordinator-URL krävs</string>
     <string name="error_device_required">Enhetsnamn krävs</string>
     <string name="error_state_directory">Kunde inte skapa den skyddade statuskatalogen</string>

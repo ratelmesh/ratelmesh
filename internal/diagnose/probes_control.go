@@ -28,7 +28,7 @@ func (coordinatorProbe) Run(ctx context.Context, env *Env) ProbeResult {
 	if err != nil {
 		res.add(newFinding(ProbeCoordinator, CodeCoordinatorUnreachable,
 			fmt.Sprintf("could not connect to coordinator at %s", addr),
-			map[string]string{"endpoint": addr, "error": err.Error()}))
+			map[string]string{"endpoint": addr, "error_class": safeErrorClass(err)}))
 		return res
 	}
 	_ = conn.Close()
@@ -43,7 +43,7 @@ func (coordinatorProbe) Run(ctx context.Context, env *Env) ProbeResult {
 			}
 			res.add(newFinding(ProbeCoordinator, code,
 				"coordinator health check failed",
-				map[string]string{"endpoint": endpointURL(c), "error": herr.Error()}))
+				map[string]string{"endpoint": endpointURL(c), "error_class": safeErrorClass(herr)}))
 			return res
 		}
 		if status < 200 || status >= 400 {
@@ -97,7 +97,7 @@ func (relayProbe) Run(ctx context.Context, env *Env) ProbeResult {
 		if err != nil {
 			res.add(newFinding(ProbeRelay, CodeRelayUnreachable,
 				fmt.Sprintf("relay %q is unreachable", r.Label),
-				map[string]string{"relay": r.Label, "endpoint": addr, "error": err.Error()}))
+				map[string]string{"relay": r.Label, "endpoint": addr, "error_class": safeErrorClass(err)}))
 			continue
 		}
 		_ = conn.Close()
@@ -166,7 +166,7 @@ func (exitProbe) Run(ctx context.Context, env *Env) ProbeResult {
 				problem = true
 				ev := map[string]string{"canary": ex.EgressCanary.Label}
 				if err != nil {
-					ev["error"] = err.Error()
+					ev["error_class"] = safeErrorClass(err)
 				} else {
 					ev["status"] = fmt.Sprint(status)
 				}

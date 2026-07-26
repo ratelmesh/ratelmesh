@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "Nederlands", "code": "nl" },
   "status.state": "Status:  {state}",
+  "status.cleanup.pending": "Waarschuwing: de netwerkopschoning is niet voltooid. Start RatelMesh opnieuw; voer `ratelmesh doctor` uit als dit blijft optreden.",
   "status.coord": "Coord:   {coord}",
   "status.self": "Dit app.: {ip}  {name}  ({key})",
   "status.exit.active": "Exit:    {name} (alle verkeer loopt via deze exit)",

@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "日本語", "code": "ja" },
   "status.state": "状態：   {state}",
+  "status.cleanup.pending": "警告：ネットワークのクリーンアップが完了していません。RatelMesh を再起動し、解消しない場合は `ratelmesh doctor` を実行してください。",
   "status.coord": "コーディネータ： {coord}",
   "status.self": "自機：   {ip}  {name}  ({key})",
   "status.exit.active": "出口：   {name}（全トラフィックをこの出口経由）",

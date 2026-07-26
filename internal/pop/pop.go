@@ -23,7 +23,7 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // GenerateCoordKey returns a new X25519 keypair for the coord.
@@ -86,6 +86,14 @@ func ChallengeContext(proofTime int64, nonce string, nodePub types.Key, role str
 		}
 	}
 	return b
+}
+
+// ChallengeContextV2 binds the physical-machine identity used by the
+// coordinator's copied-device-state defense.
+func ChallengeContextV2(proofTime int64, nonce string, nodePub types.Key, role string, routes, endpoints, discoEndpoints []string, machineIdentity string, pqPublicKeys ...[]byte) []byte {
+	b := ChallengeContext(proofTime, nonce, nodePub, role, routes, endpoints, discoEndpoints, pqPublicKeys...)
+	b = appendField(b, []byte("machine-identity-v2"))
+	return appendField(b, []byte(machineIdentity))
 }
 
 // Prove is the client side: HMAC(X25519(nodePriv, coordPub), context).

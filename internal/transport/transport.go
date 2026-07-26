@@ -17,7 +17,10 @@
 // given link uses.
 package transport
 
-import "net"
+import (
+	"errors"
+	"net"
+)
 
 // Transport wraps a raw connection with an obfuscation scheme. Client wraps the
 // dialing side; Server wraps the accepting side. Both must agree out of band on
@@ -38,12 +41,17 @@ func (Plain) Name() string                          { return "plain" }
 func (Plain) Client(raw net.Conn) (net.Conn, error) { return raw, nil }
 func (Plain) Server(raw net.Conn) (net.Conn, error) { return raw, nil }
 
-// New returns a transport by name, or Plain for unknown/empty names. For
-// "tlscamo" it returns the client side (camouflaging as HTTPS to `secret` as the
-// SNI); a server should construct NewTLSCamoServer explicitly since it generates
-// a certificate and can fail.
+// New returns a transport by name. Empty and "plain" explicitly select Plain;
+// unknown names fail closed when used instead of silently disabling transport.
+// For "tlscamo" it returns a fail-closed client placeholder because this legacy
+// factory has no certificate-pin parameter. Call NewTLSCamoClient with a
+// non-empty pin for lab use, or use authenticated WSS in production. A server
+// should construct NewTLSCamoServer explicitly since it generates a certificate
+// and can fail.
 func New(name string, secret []byte) Transport {
 	switch name {
+	case "", "plain":
+		return Plain{}
 	case "obfs":
 		return NewObfs(secret)
 	case "tlscamo":
@@ -51,6 +59,20 @@ func New(name string, secret []byte) Transport {
 	case "wscamo":
 		return NewWSCamoClient(string(secret))
 	default:
-		return Plain{}
+		return rejectedTransport{name: name}
 	}
+}
+
+var errUnsupportedTransport = errors.New("transport: unsupported transport")
+
+type rejectedTransport struct {
+	name string
+}
+
+func (t rejectedTransport) Name() string { return t.name }
+func (rejectedTransport) Client(net.Conn) (net.Conn, error) {
+	return nil, errUnsupportedTransport
+}
+func (rejectedTransport) Server(net.Conn) (net.Conn, error) {
+	return nil, errUnsupportedTransport
 }

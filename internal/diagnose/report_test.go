@@ -3,6 +3,7 @@ package diagnose
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,65 @@ func TestReportContainsNoRawSecrets(t *testing.T) {
 	}
 	if check["schema"] != "ratelmesh.diagnose.report/v2" || reportSchema != "ratelmesh.diagnose.report/v2" {
 		t.Fatalf("unexpected schema %v", check["schema"])
+	}
+}
+
+func TestReportDoesNotTrustEndpointLabelsOrFailureText(t *testing.T) {
+	const (
+		deviceName  = "Han-MacBook-Pro"
+		privatePath = "/var/lib/ratelmesh/private/state.db"
+		opaqueToken = "sessionCredentialForHan"
+	)
+	snap := Snapshot{
+		Coordinator: Endpoint{Label: deviceName, Host: "coord.example.net", Port: 443},
+		Relays:      []Endpoint{{Label: deviceName, Host: "relay.example.net", Port: 443}},
+		MediaTargets: []Endpoint{{
+			Label: deviceName, Host: "media.example.net", Port: 443,
+			Scheme: "https", EvidenceSource: "Han-Office-Mac-mini",
+		}},
+	}
+	hostile := errors.New("device " + deviceName + " failed at " + privatePath + " using " + opaqueToken)
+	dialer := newFakeDialer()
+	dialer.fail["coord.example.net:443"] = hostile
+	dialer.fail["relay.example.net:443"] = hostile
+	report := New(fixedSaltConfig(), Deps{
+		Dialer:   dialer,
+		Resolver: fakeResolver{err: hostile},
+		HTTP:     &fakeHTTP{err: hostile},
+		Clock:    fixedClock(),
+	}).Run(context.Background(), snap)
+	out, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{deviceName, "Han-Office-Mac-mini", privatePath, opaqueToken} {
+		if strings.Contains(string(out), forbidden) {
+			t.Fatalf("support report leaked %q: %s", forbidden, out)
+		}
+	}
+}
+
+type privatePanicProbe struct{}
+
+func (privatePanicProbe) ID() ProbeID { return ProbeCoordinator }
+func (privatePanicProbe) Run(context.Context, *Env) ProbeResult {
+	panic("Han-MacBook-Pro /private/var/ratelmesh/token sessionCredentialForHan")
+}
+
+func TestReportDoesNotSerializePanicPayload(t *testing.T) {
+	report := New(fixedSaltConfig(), permissiveDeps(fixedClock()), WithProbes(privatePanicProbe{})).
+		Run(context.Background(), Snapshot{})
+	out, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Han-MacBook-Pro", "/private/var/ratelmesh/token", "sessionCredentialForHan"} {
+		if strings.Contains(string(out), forbidden) {
+			t.Fatalf("panic payload leaked %q: %s", forbidden, out)
+		}
+	}
+	if !strings.Contains(string(out), string(CodeProbePanic)) {
+		t.Fatalf("stable panic code missing from report: %s", out)
 	}
 }
 

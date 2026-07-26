@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func TestWgQuickConfigRendersInterfaceAndPeers(t *testing.T) {
@@ -32,6 +32,7 @@ func TestWgQuickConfigRendersInterfaceAndPeers(t *testing.T) {
 		"[Interface]",
 		"PrivateKey = " + priv.String(),
 		"ListenPort = 51820",
+		"MTU = 1280",
 		"Address = 100.64.0.5/32",
 		"DNS = 127.0.0.1, ::1",
 		"[Peer]",
@@ -148,4 +149,29 @@ func TestFirstRenderableEndpointSkipsToValid(t *testing.T) {
 	if FirstRenderableEndpoint([]string{"nope"}) != "" {
 		t.Fatal("an all-invalid candidate list must render no endpoint")
 	}
+}
+
+func FuzzFirstRenderableEndpoint(f *testing.F) {
+	f.Add("bad\nallowed_ip=0.0.0.0/0", "203.0.113.7:51820")
+	f.Add("[2001:db8::7]:443", "127.0.0.1:1")
+	f.Add("", "hostname:51820")
+	f.Fuzz(func(t *testing.T, first, second string) {
+		input := []string{first, second}
+		got := FirstRenderableEndpoint(input)
+		want := ""
+		for _, candidate := range input {
+			if _, err := netip.ParseAddrPort(candidate); err == nil {
+				want = candidate
+				break
+			}
+		}
+		if got != want {
+			t.Fatalf("FirstRenderableEndpoint(%q) = %q, want %q", input, got, want)
+		}
+		if got != "" {
+			if _, err := netip.ParseAddrPort(got); err != nil {
+				t.Fatalf("returned non-renderable endpoint %q: %v", got, err)
+			}
+		}
+	})
 }

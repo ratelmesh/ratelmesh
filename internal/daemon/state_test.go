@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/control"
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/routing"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/control"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/routing"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func TestMachineIdentityIsBoundToHardwareAndNodeKey(t *testing.T) {
@@ -328,5 +328,33 @@ func TestEnrollmentInvalidatedOnlyForCredentialFailures(t *testing.T) {
 				t.Fatalf("enrollmentInvalidated(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCleanupPendingStatePersistsUntilCleared(t *testing.T) {
+	dir := t.TempDir()
+	pending, err := cleanupPendingState(dir)
+	if err != nil || pending {
+		t.Fatalf("initial cleanup state = %v, %v; want false, nil", pending, err)
+	}
+	if err := persistCleanupPending(dir); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = cleanupPendingState(dir)
+	if err != nil || !pending {
+		t.Fatalf("persisted cleanup state = %v, %v; want true, nil", pending, err)
+	}
+	if mode := fileMode(t, filepath.Join(dir, cleanupFile)); mode != 0o600 {
+		t.Fatalf("cleanup state mode = %o, want 600", mode)
+	}
+	if err := clearCleanupPending(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearCleanupPending(dir); err != nil {
+		t.Fatalf("idempotent clear: %v", err)
+	}
+	pending, err = cleanupPendingState(dir)
+	if err != nil || pending {
+		t.Fatalf("cleared cleanup state = %v, %v; want false, nil", pending, err)
 	}
 }

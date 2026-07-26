@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func testNode(t *testing.T) types.Node {
@@ -64,6 +64,25 @@ func TestRouteSignatureRejectsTamperedAllowedIPs(t *testing.T) {
 	n.AllowedIPs = append(n.AllowedIPs, "0.0.0.0/0")
 	if VerifyRoutes(a.PublicKey(), n, sig) {
 		t.Fatal("route signature verified after AllowedIPs were changed")
+	}
+}
+
+func TestCapabilitySignaturesRejectMutation(t *testing.T) {
+	a, err := GenerateAuthority()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := testNode(t)
+	classical := a.SignCapabilities(n)
+	pq := a.SignCapabilitiesPQ(n)
+	if !VerifyCapabilities(a.PublicKey(), n, classical) ||
+		!VerifyCapabilitiesPQ(a.PQPublicKey(), n, pq) {
+		t.Fatal("valid capability credentials failed to verify")
+	}
+	n.Capabilities.Exit = true
+	if VerifyCapabilities(a.PublicKey(), n, classical) ||
+		VerifyCapabilitiesPQ(a.PQPublicKey(), n, pq) {
+		t.Fatal("capability credential accepted a mutated grant")
 	}
 }
 

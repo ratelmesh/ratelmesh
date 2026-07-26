@@ -1,5 +1,5 @@
 #!/bin/bash
-set -u
+set -eu
 
 LABEL=com.ratelmesh.daemon
 MENU_LABEL=com.ratelmesh.menubar

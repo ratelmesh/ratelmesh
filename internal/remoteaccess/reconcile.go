@@ -97,7 +97,11 @@ func ReconcileTarget(req TargetReconcileRequest) (*ReconcileResult, error) {
 		return nil, enforcementError(CodePeerBinding, err)
 	}
 
-	policy, err := VerifyPolicyState(req.SignedPolicy, req.Verifier, req.Self.TenantID, req.Now)
+	trustedNow, err := PolicyTimeFloor(req.PolicyStore, req.Self.TenantID, req.Now)
+	if err != nil {
+		return nil, enforcementError(CodeStorage, err)
+	}
+	policy, err := VerifyPolicyState(req.SignedPolicy, req.Verifier, req.Self.TenantID, trustedNow)
 	if err != nil {
 		return nil, enforcementError(classifyGrantError(err), err)
 	}
@@ -105,6 +109,11 @@ func ReconcileTarget(req TargetReconcileRequest) (*ReconcileResult, error) {
 	if err != nil {
 		return nil, enforcementError(CodeStorage, err)
 	}
+	policy, err = ObservePolicyAt(policy, current, exists, req.Now)
+	if err != nil {
+		return nil, enforcementError(CodeStorage, err)
+	}
+	trustedNow = policy.ObservedAt
 	if err := checkPolicyAdvance(current, exists, policy); err != nil {
 		code := CodePolicyStale
 		if errors.Is(err, ErrPolicyConflict) {
@@ -128,7 +137,7 @@ func ReconcileTarget(req TargetReconcileRequest) (*ReconcileResult, error) {
 
 	candidates := make([]verifiedCandidate, 0, len(req.Grants))
 	for index, signed := range req.Grants {
-		grant, err := verifyGrantPayload(signed, req.Verifier, req.Now, policy.Version)
+		grant, err := verifyGrantPayload(signed, req.Verifier, trustedNow, policy.Version)
 		if err != nil {
 			result.Rejected = append(result.Rejected, GrantRejection{Index: index, Code: classifyGrantError(err)})
 			continue

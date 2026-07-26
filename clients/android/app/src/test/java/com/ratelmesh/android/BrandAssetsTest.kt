@@ -1,13 +1,64 @@
 package com.ratelmesh.android
 
+import com.ratelmesh.android.data.ClientSettings
+import com.ratelmesh.android.data.IdentityResetCoordinator
+import com.ratelmesh.android.data.requiresIdentityReset
 import java.io.File
 import java.security.MessageDigest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class BrandAssetsTest {
+    @Test
+    fun credentialResetOperationsAreProcessWideSerialized() {
+        val active = AtomicInteger()
+        val maximum = AtomicInteger()
+        val ready = CountDownLatch(12)
+        val start = CountDownLatch(1)
+        val done = CountDownLatch(12)
+        val pool = Executors.newFixedThreadPool(12)
+        repeat(12) {
+            pool.execute {
+                ready.countDown()
+                start.await()
+                IdentityResetCoordinator.serialized {
+                    maximum.updateAndGet { previous -> maxOf(previous, active.incrementAndGet()) }
+                    Thread.sleep(5)
+                    active.decrementAndGet()
+                }
+                done.countDown()
+            }
+        }
+        assertTrue(ready.await(2, TimeUnit.SECONDS))
+        start.countDown()
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        pool.shutdownNow()
+        assertEquals(1, maximum.get())
+    }
+
+    @Test
+    fun remoteAccessRejectsAuthorityAndPathInjection() {
+        assertEquals("ssh://100.64.0.8:22", RemoteAccessTarget.url("ssh", "100.64.0.8", 22))
+        assertEquals("vnc://[fd00::8]:5900", RemoteAccessTarget.url("vnc", "fd00::8", 5900))
+        listOf(
+            "office.example",
+            "100.64.0.8@evil.example",
+            "100.64.0.8/path",
+            "100.64.0.8?x=1",
+            "[fd00::8]",
+            "fd00::8%wlan0",
+        ).forEach { assertNull(RemoteAccessTarget.url("ssh", it, 22)) }
+        assertNull(RemoteAccessTarget.url("https", "100.64.0.8", 22))
+        assertNull(RemoteAccessTarget.url("ssh", "100.64.0.8", 0))
+    }
+
     private val appDir: File by lazy {
         val working = File(requireNotNull(System.getProperty("user.dir")))
         sequenceOf(
@@ -32,6 +83,22 @@ class BrandAssetsTest {
             assertTrue("$relativePath must exist", asset.isFile)
             assertEquals("$relativePath must remain the accepted v3 mark", digest, asset.sha256())
         }
+    }
+
+    @Test
+    fun `adaptive launcher keeps the v3 mark inside the mask safe zone`() {
+        val adaptive = File(appDir, "src/main/res/mipmap-anydpi-v26/ic_launcher.xml").readText()
+        val foreground = File(appDir, "src/main/res/drawable/ic_launcher_foreground.xml").readText()
+        val inAppMark = File(appDir, "src/main/res/drawable/brand_mark.xml").readText()
+        val manifest = File(appDir, "src/main/AndroidManifest.xml").readText()
+
+        assertTrue(adaptive.contains("""android:drawable="@drawable/ic_launcher_foreground""""))
+        assertTrue(adaptive.contains("""android:drawable="@color/ic_launcher_background""""))
+        assertTrue(foreground.contains("""android:scaleX="0.62""""))
+        assertTrue(foreground.contains("""android:scaleY="0.62""""))
+        assertTrue(foreground.contains("M81,131C61,113 46,112 34,124"))
+        assertTrue(inAppMark.contains("M192,158L256,132L320,158"))
+        assertTrue(manifest.contains("""android:roundIcon="@mipmap/ic_launcher""""))
     }
 
     @Test
@@ -101,6 +168,93 @@ class BrandAssetsTest {
         assertTrue(source.contains("Brand(Modifier.weight(1f))"))
         assertTrue(source.contains("contentDescription = fullDescription"))
         assertTrue(source.contains("languageShortLabel(selected)"))
+        assertTrue(source.contains("FlowRow("))
+        assertTrue(source.contains("verticalArrangement = Arrangement.spacedBy(8.dp)"))
+        assertTrue(source.contains("this.selected = language == selected"))
+        assertTrue(source.contains("this.selected = true"))
+        assertTrue(source.contains("contentDescription = remoteAccessAccessibilityLabel"))
+        assertFalse(source.contains("""Text("✓ ${'$'}label""""))
+    }
+
+    @Test
+    fun `vpn service uses the selected app language for foreground messages`() {
+        val source = File(
+            appDir,
+            "src/main/java/com/ratelmesh/android/service/MeshVpnService.kt",
+        ).readText()
+
+        assertTrue(source.contains("override fun attachBaseContext(newBase: Context)"))
+        assertTrue(source.contains("AppLanguagePreferences.localizedContext(newBase)"))
+        assertTrue(source.contains("ACTION_REFRESH_LANGUAGE"))
+        assertTrue(source.contains("notification(connecting = !tunnelUp)"))
+        assertFalse(source.contains("ACTION_REFRESH_LANGUAGE -> scope.launch { stopSession() }"))
+        assertFalse(source.contains("error.message"))
+        assertFalse(source.contains("error.javaClass.simpleName"))
+        assertTrue(source.contains("error = getString(R.string.error_connection_failed)"))
+        assertTrue(source.contains("private fun withoutLiveSession("))
+        assertTrue(source.contains("exitTrafficVerified = false"))
+        assertTrue(source.contains("exitClients = emptyList()"))
+        assertTrue(source.contains("enrollmentRequired = false"))
+        assertTrue(source.contains("stopAfterSystemTunnelDown"))
+        assertTrue(source.contains("withTimeoutOrNull(ON_DESTROY_JOIN_TIMEOUT_MS)"))
+        assertFalse(source.contains("runBlocking { job?.join() }"))
+
+        val activity = File(
+            appDir,
+            "src/main/java/com/ratelmesh/android/MainActivity.kt",
+        ).readText()
+        assertTrue(activity.contains("AppLanguagePreferences.save(this, language)"))
+        assertTrue(activity.contains("MeshVpnService.refreshLanguage(this)"))
+    }
+
+    @Test
+    fun `credential changes reset identity before the core can restart`() {
+        val settings = File(
+            appDir,
+            "src/main/java/com/ratelmesh/android/data/SecureSettings.kt",
+        ).readText()
+        val service = File(
+            appDir,
+            "src/main/java/com/ratelmesh/android/service/MeshVpnService.kt",
+        ).readText()
+
+        assertTrue(settings.contains("KEY_IDENTITY_RESET_PENDING"))
+        assertTrue(settings.contains("fun resetIdentityIfPending(reset: () -> Unit)"))
+        assertTrue(settings.contains("IdentityResetCoordinator.serialized"))
+        assertTrue(service.contains("resetIdentityIfPending"))
+        val reset = service.indexOf("resetIdentityIfPending")
+        val start = service.indexOf("core.startApp(")
+        assertTrue(reset >= 0 && start > reset)
+        assertTrue(service.contains("deleteRecursively()"))
+
+        val old = ClientSettings("https://control.ratelmesh.com", "old-code", "phone")
+        assertFalse(requiresIdentityReset(old, old))
+        assertTrue(requiresIdentityReset(old, old.copy(authKey = "new-code")))
+        assertTrue(requiresIdentityReset(old, old.copy(coordinatorUrl = "https://other.example")))
+        assertFalse(requiresIdentityReset(old, old.copy(hostname = "renamed-phone")))
+        assertFalse(requiresIdentityReset(old, old.copy(authKey = "")))
+    }
+
+    @Test
+    fun `teardown preserves actionable enrollment state and exposes no configuration`() {
+        val service = File(
+            appDir,
+            "src/main/java/com/ratelmesh/android/service/MeshVpnService.kt",
+        ).readText()
+        val manifest = File(appDir, "src/main/AndroidManifest.xml").readText()
+        val extraction = File(appDir, "src/main/res/xml/data_extraction_rules.xml").readText()
+
+        assertTrue(service.contains("enrollmentRequired = current.enrollmentRequired"))
+        val teardown = service.substringAfter("private fun withoutLiveSession(")
+            .substringBefore("private fun releaseCoreService()")
+        assertFalse(teardown.contains("enrollmentRequired = false"))
+        assertFalse(service.contains("Log."))
+        assertFalse(service.contains("println("))
+        assertTrue(service.contains("PendingIntent.FLAG_IMMUTABLE"))
+        assertTrue(manifest.contains("""android:allowBackup="false""""))
+        assertTrue(manifest.contains("""android:exported="false""""))
+        assertTrue(extraction.contains("""<exclude domain="sharedpref" path="." />"""))
+        assertTrue(extraction.contains("""<exclude domain="file" path="." />"""))
     }
 
     private fun File.sha256(): String {

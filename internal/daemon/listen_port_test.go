@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 func TestDeviceListenPortIsStableAndDeviceSpecific(t *testing.T) {

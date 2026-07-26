@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/shan25519/ratelmesh/internal/diagnose"
+	"github.com/ratelmesh/ratelmesh/internal/diagnose"
 )
 
 type platformOps struct {

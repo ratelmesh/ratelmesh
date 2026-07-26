@@ -32,9 +32,8 @@ func GenerateLauncherMetadata(grant *Grant) (*LauncherMetadata, error) {
 
 	// Unambiguous fixed URI format: scheme://host:port
 	// RFC 3986 compliance, explicitly excluding userinfo and path.
-	var hostPort string
 	// If IPv6, net.JoinHostPort correctly wraps it in brackets.
-	hostPort = net.JoinHostPort(ip, port)
+	hostPort := net.JoinHostPort(ip, port)
 
 	// Validate platform compatibility.
 	switch grant.Service.Platform {

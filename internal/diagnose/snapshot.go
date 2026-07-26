@@ -339,3 +339,41 @@ func (s Snapshot) tokenizedInterfaces(redactor *Redactor) Snapshot {
 	}
 	return s
 }
+
+// tokenizedReportIdentifiers replaces caller-controlled display labels before
+// probes can copy them into findings. Labels and evidence-source names are
+// useful for within-run correlation but are not trusted as public text: a
+// caller may have populated one with a device or office name. Hosts, keys and
+// addresses are handled by the report redactor; filesystem and dependency
+// errors never enter findings as raw text.
+func (s Snapshot) tokenizedReportIdentifiers(redactor *Redactor) Snapshot {
+	s = s.tokenizedInterfaces(redactor)
+	tokenEndpoint := func(endpoint Endpoint) Endpoint {
+		endpoint.Label = redactor.tokenIdentifier("endpoint", endpoint.Label)
+		endpoint.EvidenceSource = redactor.tokenIdentifier("source", endpoint.EvidenceSource)
+		return endpoint
+	}
+
+	s.Coordinator = tokenEndpoint(s.Coordinator)
+	if len(s.Relays) != 0 {
+		s.Relays = append([]Endpoint(nil), s.Relays...)
+		for i := range s.Relays {
+			s.Relays[i] = tokenEndpoint(s.Relays[i])
+		}
+	}
+	if len(s.MediaTargets) != 0 {
+		s.MediaTargets = append([]Endpoint(nil), s.MediaTargets...)
+		for i := range s.MediaTargets {
+			s.MediaTargets[i] = tokenEndpoint(s.MediaTargets[i])
+		}
+	}
+	if s.Exit != nil {
+		exit := *s.Exit
+		if exit.EgressCanary != nil {
+			canary := tokenEndpoint(*exit.EgressCanary)
+			exit.EgressCanary = &canary
+		}
+		s.Exit = &exit
+	}
+	return s
+}

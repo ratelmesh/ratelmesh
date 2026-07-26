@@ -221,6 +221,10 @@ enum UpdateSecurity {
         return .orderedSame
     }
 
+    static func versionIsValid(_ version: String) -> Bool {
+        parseVersion(version, exactSemver: true) != nil
+    }
+
     static func sha256(of fileURL: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
@@ -584,7 +588,9 @@ final class UpdateStore: ObservableObject {
     private let defaults: UserDefaults
     private let automaticKey = "updates.automatic"
     private let lastCheckKey = "updates.lastCheck"
-    private let highestManifestVersionKey = "updates.highestManifestVersion"
+    private let installedVersionFloorKey = "updates.installedVersionFloor"
+    private let verifiedPackageVersionFloorKey = "updates.verifiedPackageVersionFloor"
+    private let legacyManifestVersionFloorKey = "updates.highestManifestVersion"
     private let checkDueInterval: TimeInterval
     private let schedulerInitialDelay: Duration
     private let schedulerPollInterval: Duration
@@ -627,6 +633,13 @@ final class UpdateStore: ObservableObject {
         self.schedulerInitialDelay = schedulerInitialDelay
         self.schedulerPollInterval = schedulerPollInterval
 
+        // The legacy floor was advanced as soon as a signed manifest was seen,
+        // even when its package could not be downloaded. Its provenance cannot
+        // be recovered safely, so replace it with two explicit floors:
+        // the version running now and packages whose size and SHA were verified.
+        defaults.removeObject(forKey: legacyManifestVersionFloorKey)
+        Self.advanceVersionFloor(defaults, key: installedVersionFloorKey, to: self.currentVersion)
+
         if let session {
             self.session = session
         } else {
@@ -649,7 +662,7 @@ final class UpdateStore: ObservableObject {
                 } catch is CancellationError {
                     return
                 } catch {
-                    NSLog("RatelMesh update scheduler failed: %@", String(describing: error))
+                    NSLog("RatelMesh update scheduler failed")
                 }
             }
         }
@@ -693,16 +706,9 @@ final class UpdateStore: ObservableObject {
             guard UpdateSecurity.systemSupports(candidate.minimumSystemVersion) else {
                 throw UpdateSecurityError.unsupportedPlatform
             }
-            if let floor = defaults.string(forKey: highestManifestVersionKey),
+            if let floor = rollbackFloor(),
                UpdateSecurity.compareVersions(candidate.version, floor) == .orderedAscending {
                 throw UpdateSecurityError.rollbackManifest
-            }
-            if let floor = defaults.string(forKey: highestManifestVersionKey) {
-                if UpdateSecurity.compareVersions(floor, candidate.version) == .orderedAscending {
-                    defaults.set(candidate.version, forKey: highestManifestVersionKey)
-                }
-            } else {
-                defaults.set(candidate.version, forKey: highestManifestVersionKey)
             }
             defaults.set(Date(), forKey: lastCheckKey)
             let comparison = UpdateSecurity.compareVersions(currentVersion, candidate.version)
@@ -720,7 +726,7 @@ final class UpdateStore: ObservableObject {
                 await download(candidate, promptWhenReady: true)
             }
         } catch {
-            NSLog("RatelMesh update check failed: %@", String(describing: error))
+            NSLog("RatelMesh update check failed")
             failure = UpdateFailure.classify(error)
             phase = .failed
         }
@@ -740,7 +746,7 @@ final class UpdateStore: ObservableObject {
             }
             guard NSWorkspace.shared.open(package) else { throw URLError(.cannotOpenFile) }
         } catch {
-            NSLog("RatelMesh update launch failed: %@", String(describing: error))
+            NSLog("RatelMesh update launch failed")
             failure = UpdateFailure.classify(error)
             phase = .failed
         }
@@ -804,11 +810,16 @@ final class UpdateStore: ObservableObject {
                 expectedSize: candidate.size,
                 expectedSHA256: candidate.sha256
             )
+            Self.advanceVersionFloor(
+                defaults,
+                key: verifiedPackageVersionFloorKey,
+                to: candidate.version
+            )
             downloadedPackage = destination
             phase = .ready
             if promptWhenReady { presentInstallPrompt(version: candidate.version) }
         } catch {
-            NSLog("RatelMesh update download failed: %@", String(describing: error))
+            NSLog("RatelMesh update download failed")
             failure = UpdateFailure.classify(error)
             phase = .failed
         }
@@ -827,6 +838,25 @@ final class UpdateStore: ObservableObject {
         alert.addButton(withTitle: UpdateCopy.text("Later", "稍后"))
         if alert.runModal() == .alertFirstButtonReturn {
             installDownloadedUpdate()
+        }
+    }
+
+    private func rollbackFloor() -> String? {
+        [installedVersionFloorKey, verifiedPackageVersionFloorKey]
+            .compactMap { defaults.string(forKey: $0) }
+            .max {
+                UpdateSecurity.compareVersions($0, $1) == .orderedAscending
+            }
+    }
+
+    private static func advanceVersionFloor(_ defaults: UserDefaults, key: String, to version: String) {
+        guard UpdateSecurity.versionIsValid(version) else { return }
+        guard let floor = defaults.string(forKey: key) else {
+            defaults.set(version, forKey: key)
+            return
+        }
+        if UpdateSecurity.compareVersions(floor, version) == .orderedAscending {
+            defaults.set(version, forKey: key)
         }
     }
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -117,24 +118,26 @@ func TestTLSCamoRoundTripPinned(t *testing.T) {
 	}
 }
 
-func TestTLSCamoRoundTripInsecure(t *testing.T) {
-	server, err := NewTLSCamoServer("insecure.example.com")
-	if err != nil {
-		t.Fatalf("NewTLSCamoServer: %v", err)
-	}
-	// nil pinCert => InsecureSkipVerify path (test/dev only).
+func TestTLSCamoRejectsMissingPin(t *testing.T) {
 	client := NewTLSCamoClient("insecure.example.com", nil)
 	if client.pinned {
 		t.Fatal("client should not be pinned when no cert supplied")
 	}
-
-	payload := []byte("hello over unpinned tls")
-	got, wire := tlsRoundTrip(t, client, server, payload)
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("round-trip got %q, want %q", got, payload)
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	if _, err := client.Client(left); err == nil || !strings.Contains(err.Error(), "certificate pin is required") {
+		t.Fatalf("Client() error = %v, want missing-pin failure", err)
 	}
-	if bytes.Contains(wire, payload) {
-		t.Error("tlscamo leaked plaintext on the wire")
+}
+
+func TestTLSCamoZeroValueCannotBypassPinning(t *testing.T) {
+	client := &TLSCamo{serverName: "insecure.example.com"}
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	if _, err := client.Client(left); err == nil || !strings.Contains(err.Error(), "certificate pin is required") {
+		t.Fatalf("zero-value Client() error = %v, want missing-pin failure", err)
 	}
 }
 

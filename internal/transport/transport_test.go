@@ -2,11 +2,25 @@ package transport
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"sync"
 	"testing"
 )
+
+func TestUnknownTransportFailsClosed(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	unknown := New("wss-typo", nil)
+	if _, err := unknown.Client(left); !errors.Is(err, errUnsupportedTransport) {
+		t.Fatalf("unknown transport client error=%v", err)
+	}
+	if _, err := unknown.Server(right); !errors.Is(err, errUnsupportedTransport) {
+		t.Fatalf("unknown transport server error=%v", err)
+	}
+}
 
 // roundTrip runs a client->server exchange over an in-memory pipe using the
 // given transport, returning what the server received (plaintext) and the raw

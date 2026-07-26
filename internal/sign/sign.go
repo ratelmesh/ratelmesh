@@ -13,12 +13,16 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // Authority holds the signing key. In production this lives offline; the coord
@@ -45,7 +49,7 @@ func GenerateAuthority() (*Authority, error) {
 // LoadOrCreate loads an authority key from path (base64 seed) or creates and
 // persists one on first use.
 func LoadOrCreate(path string) (*Authority, error) {
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := readPrivateKeyFile(path); err == nil {
 		seed, err := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(b)))
 		if err == nil && len(seed) == ed25519.SeedSize {
 			pqPriv, pqErr := loadOrCreateMLDSA(path + ".mldsa65")
@@ -54,13 +58,16 @@ func LoadOrCreate(path string) (*Authority, error) {
 			}
 			return &Authority{priv: ed25519.NewKeyFromSeed(seed), pqPriv: pqPriv}, nil
 		}
+		return nil, ErrBadKey
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 	a, err := GenerateAuthority()
 	if err != nil {
 		return nil, err
 	}
 	seed := a.priv.Seed()
-	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(seed)), 0o600); err != nil {
+	if err := writeNewPrivateKeyFile(path, []byte(base64.StdEncoding.EncodeToString(seed))); err != nil {
 		return nil, err
 	}
 	if err := persistMLDSA(path+".mldsa65", a.pqPriv); err != nil {
@@ -70,7 +77,7 @@ func LoadOrCreate(path string) (*Authority, error) {
 }
 
 func loadOrCreateMLDSA(path string) (*mldsa65.PrivateKey, error) {
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := readPrivateKeyFile(path); err == nil {
 		seedBytes, err := base64.StdEncoding.DecodeString(string(bytes.TrimSpace(data)))
 		if err != nil || len(seedBytes) != mldsa65.SeedSize {
 			return nil, ErrBadKey
@@ -79,6 +86,8 @@ func loadOrCreateMLDSA(path string) (*mldsa65.PrivateKey, error) {
 		copy(seed[:], seedBytes)
 		_, priv := mldsa65.NewKeyFromSeed(&seed)
 		return priv, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 	_, priv, err := mldsa65.GenerateKey(rand.Reader)
 	if err != nil {
@@ -95,7 +104,81 @@ func persistMLDSA(path string, priv *mldsa65.PrivateKey) error {
 	if len(seed) != mldsa65.SeedSize {
 		return ErrBadKey
 	}
-	return os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(seed)), 0o600)
+	return writeNewPrivateKeyFile(path, []byte(base64.StdEncoding.EncodeToString(seed)))
+}
+
+const maxAuthorityKeyFileBytes = 16 << 10
+
+func readPrivateKeyFile(path string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("sign: authority key path is not a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("sign: authority key changed while opening")
+	}
+	if opened.Size() > maxAuthorityKeyFileBytes {
+		return nil, ErrBadKey
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return nil, fmt.Errorf("sign: restrict authority key permissions: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxAuthorityKeyFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAuthorityKeyFileBytes {
+		return nil, ErrBadKey
+	}
+	return data, nil
+}
+
+func writeNewPrivateKeyFile(path string, data []byte) (err error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		_ = file.Close()
+		if !committed {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err = file.Write(data); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	parent, openErr := os.Open(filepath.Dir(path))
+	if openErr != nil {
+		return openErr
+	}
+	if syncErr := parent.Sync(); syncErr != nil {
+		_ = parent.Close()
+		return syncErr
+	}
+	if closeErr := parent.Close(); closeErr != nil {
+		return closeErr
+	}
+	committed = true
+	return nil
 }
 
 // PublicKey returns the authority's public key (distributed to clients).
@@ -137,6 +220,13 @@ func (a *Authority) SignRoutes(n types.Node) []byte {
 	return ed25519.Sign(a.priv, routeCanonical(n))
 }
 
+// SignCapabilities signs only server-authoritative service grants. Keeping a
+// separate transcript preserves verification of the legacy identity and route
+// credentials during rolling upgrades.
+func (a *Authority) SignCapabilities(n types.Node) []byte {
+	return ed25519.Sign(a.priv, capabilityCanonical(n))
+}
+
 func (a *Authority) SignPQ(n types.Node) []byte {
 	sig := make([]byte, mldsa65.SignatureSize)
 	_ = mldsa65.SignTo(a.pqPriv, pqCanonical(canonical(n), n), []byte("RatelMesh-Node-v1"), false, sig)
@@ -146,6 +236,12 @@ func (a *Authority) SignPQ(n types.Node) []byte {
 func (a *Authority) SignRoutesPQ(n types.Node) []byte {
 	sig := make([]byte, mldsa65.SignatureSize)
 	_ = mldsa65.SignTo(a.pqPriv, pqCanonical(routeCanonical(n), n), []byte("RatelMesh-Routes-v1"), false, sig)
+	return sig
+}
+
+func (a *Authority) SignCapabilitiesPQ(n types.Node) []byte {
+	sig := make([]byte, mldsa65.SignatureSize)
+	_ = mldsa65.SignTo(a.pqPriv, capabilityCanonical(n), []byte("RatelMesh-Capabilities-v1"), false, sig)
 	return sig
 }
 
@@ -189,12 +285,40 @@ func VerifyRoutes(pub ed25519.PublicKey, n types.Node, sig []byte) bool {
 	return ed25519.Verify(pub, routeCanonical(n), sig)
 }
 
+func VerifyCapabilities(pub ed25519.PublicKey, n types.Node, sig []byte) bool {
+	return len(pub) == ed25519.PublicKeySize && len(sig) == ed25519.SignatureSize &&
+		ed25519.Verify(pub, capabilityCanonical(n), sig)
+}
+
 func VerifyPQ(pub *mldsa65.PublicKey, n types.Node, sig []byte) bool {
 	return pub != nil && len(sig) == mldsa65.SignatureSize && mldsa65.Verify(pub, pqCanonical(canonical(n), n), []byte("RatelMesh-Node-v1"), sig)
 }
 
 func VerifyRoutesPQ(pub *mldsa65.PublicKey, n types.Node, sig []byte) bool {
 	return pub != nil && len(sig) == mldsa65.SignatureSize && mldsa65.Verify(pub, pqCanonical(routeCanonical(n), n), []byte("RatelMesh-Routes-v1"), sig)
+}
+
+func VerifyCapabilitiesPQ(pub *mldsa65.PublicKey, n types.Node, sig []byte) bool {
+	return pub != nil && len(sig) == mldsa65.SignatureSize &&
+		mldsa65.Verify(pub, capabilityCanonical(n), []byte("RatelMesh-Capabilities-v1"), sig)
+}
+
+func capabilityCanonical(n types.Node) []byte {
+	var b bytes.Buffer
+	b.WriteString("RatelMesh-Node-Capabilities-v1\x00")
+	writeCanonicalBytes(&b, []byte(n.ID))
+	writeCanonicalBytes(&b, n.Key[:])
+	if n.Capabilities.Exit {
+		b.WriteByte(1)
+	} else {
+		b.WriteByte(0)
+	}
+	if n.Capabilities.Relay {
+		b.WriteByte(1)
+	} else {
+		b.WriteByte(0)
+	}
+	return b.Bytes()
 }
 
 // routeCanonical uses length-prefixed fields so delimiter ambiguity cannot

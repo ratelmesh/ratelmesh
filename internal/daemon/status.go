@@ -4,8 +4,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // BackendState mirrors the daemon's lifecycle for the CLI/GUI.
@@ -26,6 +26,10 @@ type Status struct {
 	Self               PeerStatus   `json:"self"`
 	Peers              []PeerStatus `json:"peers"`
 	EnrollmentRequired bool         `json:"enrollmentRequired"`
+	// CleanupPending means a previous or current shutdown could not prove that
+	// every managed route and firewall artifact was removed. The flag persists
+	// across restarts until a later shutdown completes cleanly.
+	CleanupPending bool `json:"cleanupPending,omitempty"`
 	// ActiveExit is the name of the exit node currently carrying egress traffic,
 	// or "" for direct egress (DESIGN.md §3.3).
 	ActiveExit string `json:"activeExit"`

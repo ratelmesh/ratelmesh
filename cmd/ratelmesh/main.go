@@ -10,14 +10,22 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/shan25519/ratelmesh/internal/daemon"
-	"github.com/shan25519/ratelmesh/internal/i18n"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/daemon"
+	"github.com/ratelmesh/ratelmesh/internal/i18n"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // tr is the process printer, localized from the environment (DESIGN.md §9.3:
 // follow the OS locale, overridable via RATELMESH_LANG).
 var tr = i18n.NewPrinter(pickLocale())
+
+// version is replaced in release builds with:
+// -ldflags "-X main.version=<semantic-version>".
+var version = "dev"
+
+func versionString() string {
+	return "ratelmesh v" + version
+}
 
 func pickLocale() string {
 	for _, env := range []string{"RATELMESH_LANG", "LC_ALL", "LC_MESSAGES", "LANG"} {
@@ -52,7 +60,7 @@ func main() {
 	case "dns":
 		cmdDNS(sock, args[1:])
 	case "version":
-		fmt.Println("ratelmesh (RatelMesh) — M1 dev build")
+		fmt.Println(versionString())
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -77,6 +85,9 @@ func cmdStatus(sock string, asJSON bool) {
 	}
 
 	fmt.Println(tr.T("status.state", i18n.V("state", string(st.State))))
+	if st.CleanupPending {
+		fmt.Println(tr.T("status.cleanup.pending"))
+	}
 	fmt.Println(tr.T("status.coord", i18n.V("coord", st.CoordURL)))
 	if st.Self.MeshIP != "" {
 		fmt.Println(tr.T("status.self",

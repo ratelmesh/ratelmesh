@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
 )
 
 // RemoteServiceDetector is the target-local detection seam. Production uses

@@ -17,6 +17,16 @@ func findingsWith(codes ...Code) []Finding {
 	return fs
 }
 
+func TestEmptyRepairPlanUsesArrayOnWire(t *testing.T) {
+	raw, err := json.Marshal(RepairPlan{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"repairs":[]`) {
+		t.Fatalf("empty repair plan must use an array on the wire: %s", raw)
+	}
+}
+
 // capableSnap satisfies every repair precondition, so applicability reflects the
 // findings, not missing prerequisites. The link and observed path MTU are set
 // well above the 1280 floor so the MTU-lowering repair's path-safety
@@ -516,6 +526,29 @@ func TestExecutionReportJSONOmitsSnapshotValues(t *testing.T) {
 	}
 	if !strings.Contains(s, `"routes"`) { // the snapshot kind is fine to show
 		t.Fatalf("execution report should record snapshot kinds: %s", s)
+	}
+}
+
+func TestExecutionReportJSONDoesNotExposeExecutorFailureText(t *testing.T) {
+	const hostile = "Han-MacBook-Pro /var/lib/ratelmesh/private/state.db sessionCredentialForHan"
+	rep := ExecutionReport{Repairs: []RepairExecution{{
+		Action:     ActionReapplyRoutes,
+		Status:     RepairRollbackFailed,
+		Error:      hostile,
+		Applied:    []StepResult{{Op: OpReapplyRoutes, Error: hostile}},
+		RolledBack: []StepResult{{Op: OpRestoreRoutes, Error: hostile}},
+	}}}
+	out, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Han-MacBook-Pro", "/var/lib/ratelmesh/private/state.db", "sessionCredentialForHan"} {
+		if strings.Contains(string(out), forbidden) {
+			t.Fatalf("execution report leaked %q: %s", forbidden, out)
+		}
+	}
+	if !strings.Contains(string(out), `"rollback_failed"`) {
+		t.Fatalf("stable repair status missing: %s", out)
 	}
 }
 

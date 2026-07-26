@@ -1,6 +1,7 @@
 {
   "_meta": { "language": "Português (Brasil)", "code": "pt-BR" },
   "status.state": "Estado:  {state}",
+  "status.cleanup.pending": "Aviso: a limpeza da rede não foi concluída. Reinicie o RatelMesh; se o problema continuar, execute `ratelmesh doctor`.",
   "status.coord": "Coord.:  {coord}",
   "status.self": "Este disp.: {ip}  {name}  ({key})",
   "status.exit.active": "Exit:    {name} (todo o tráfego passa por este exit)",

@@ -1,6 +1,6 @@
 package types
 
-import "github.com/shan25519/ratelmesh/internal/remoteaccess"
+import "github.com/ratelmesh/ratelmesh/internal/remoteaccess"
 
 // Control-plane API contract (M1: HTTP+JSON long-poll; migrates to gRPC
 // streaming in M2, DESIGN.md §3.1). Kept in the shared types package so coord,
@@ -63,13 +63,16 @@ type RegisterRequest struct {
 	ProofTime int64 `json:"proofTime,omitempty"`
 	// ProofNonce is the coordinator-issued, single-use challenge bound into Proof.
 	ProofNonce string `json:"proofNonce,omitempty"`
+	// ProofVersion selects the coordinator-advertised registration context.
+	ProofVersion int `json:"proofVersion,omitempty"`
 }
 
 // CoordKeyResponse carries the coord's X25519 public key (base64) for clients to
 // build their proof-of-possession. Served unauthenticated at GET /v1/coordkey.
 type CoordKeyResponse struct {
-	PublicKey string `json:"publicKey"`
-	Nonce     string `json:"nonce"`
+	PublicKey    string `json:"publicKey"`
+	Nonce        string `json:"nonce"`
+	ProofVersion int    `json:"proofVersion,omitempty"`
 }
 
 // RegisterResponse tells the device who it now is in the mesh.
@@ -131,6 +134,7 @@ type PQSessionRequest struct {
 	PeerID          string `json:"peerID"`
 	SessionToken    string `json:"sessionToken"`
 	MachineIdentity string `json:"machineIdentity,omitempty"`
+	Epoch           uint64 `json:"epoch"`
 	Ciphertext      []byte `json:"ciphertext"`
 	Signature       []byte `json:"signature"`
 }

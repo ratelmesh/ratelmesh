@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shan25519/ratelmesh/internal/remoteaccess"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/remoteaccess"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 type remoteTargetKey struct {
@@ -27,6 +27,7 @@ type remoteAuthorizedService struct {
 type remoteAccessView struct {
 	selfAllowed bool
 	services    map[remoteTargetKey][]remoteAuthorizedService
+	timeFloor   time.Time
 }
 
 // authenticateRemoteAccessNetmap derives authority-signed, locally bound
@@ -40,11 +41,29 @@ func (d *Daemon) authenticateRemoteAccessNetmap(nm types.Netmap, now time.Time) 
 
 	tenantID := remoteAccessTenantID(nm.Self.User)
 	verifier := remoteaccess.Ed25519Verifier{PublicKey: d.cfg.VerifyKey}
-	policy, err := remoteaccess.VerifyPolicyState(nm.RemoteAccessPolicyState, verifier, tenantID, now)
+	trustedNow, err := remoteaccess.PolicyTimeFloor(d.remotePolicyStore, tenantID, now)
+	if err != nil {
+		d.log.Warn("remote access disabled for netmap", "reason", "trusted time unavailable", "err", err)
+		return view
+	}
+	view.timeFloor = trustedNow
+	policy, err := remoteaccess.VerifyPolicyState(nm.RemoteAccessPolicyState, verifier, tenantID, trustedNow)
 	if err != nil {
 		d.log.Warn("remote access disabled for netmap", "reason", "policy signature rejected", "err", err)
 		return view
 	}
+	current, exists, err := d.remotePolicyStore.Load(tenantID)
+	if err != nil {
+		d.log.Warn("remote access disabled for netmap", "reason", "policy floor unavailable", "err", err)
+		return view
+	}
+	policy, err = remoteaccess.ObservePolicyAt(policy, current, exists, now)
+	if err != nil {
+		d.log.Warn("remote access disabled for netmap", "reason", "policy observation invalid", "err", err)
+		return view
+	}
+	trustedNow = policy.ObservedAt
+	view.timeFloor = trustedNow
 	if policy.Version != nm.RemoteAccessPolicyVersion {
 		d.log.Warn("remote access disabled for netmap", "reason", "policy version mismatch")
 		return view
@@ -61,7 +80,7 @@ func (d *Daemon) authenticateRemoteAccessNetmap(nm types.Netmap, now time.Time) 
 		verifier,
 		policy,
 		nm.Self.ID,
-		now,
+		trustedNow,
 	)
 	if err != nil {
 		d.log.Warn("remote access disabled for netmap", "reason", "target activation rejected", "err", err)
@@ -86,7 +105,7 @@ func (d *Daemon) authenticateRemoteAccessNetmap(nm types.Netmap, now time.Time) 
 			continue
 		}
 		grant, err := remoteaccess.VerifySignedGrant(signed, verifier, remoteaccess.VerificationContext{
-			Now:                   now,
+			Now:                   trustedNow,
 			TenantID:              tenantID,
 			GranteeID:             nm.Self.ID,
 			ExpectedGranteeMeshIP: selfMeshIP,
@@ -113,6 +132,9 @@ func (d *Daemon) authenticateRemoteAccessNetmap(nm types.Netmap, now time.Time) 
 }
 
 func (v remoteAccessView) servicesFor(peer types.Node, now time.Time) []remoteaccess.ServiceAdvertisement {
+	if v.timeFloor.After(now) {
+		now = v.timeFloor
+	}
 	if len(peer.MeshIPs) == 0 {
 		return nil
 	}

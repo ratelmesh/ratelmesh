@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -628,6 +629,59 @@ func TestConcurrentRequestsSerializePerService(t *testing.T) {
 	}
 }
 
+func TestConfirmationCannotExpireWhileQueuedForServiceLock(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(100, 0)}
+	confirmer := testConfirmer(t, &fakePresence{}, clk)
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	backend := &fakeBackend{startChanged: true, health: healthy(), startGate: gate, startEntered: entered}
+	manager, _ := NewManager(backend, confirmer, testConfig())
+	target := targetFor(PlatformLinux, ServiceSSH)
+	first := confirmedRequest(t, confirmer, target)
+	second := confirmedRequest(t, confirmer, target)
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+
+	go func() {
+		_, err := manager.EnsureRunning(context.Background(), first)
+		firstDone <- err
+	}()
+	<-entered
+	go func() {
+		_, err := manager.EnsureRunning(context.Background(), second)
+		secondDone <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.locksMu.Lock()
+		lock := manager.locks[target]
+		waiting := lock != nil && lock.refs == 2
+		manager.locksMu.Unlock()
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second request did not queue for target lock")
+		}
+		runtime.Gosched()
+	}
+
+	clk.advance(testConfig().ConfirmationTTL)
+	close(gate)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; !IsCode(err, CodeConfirmationExpired) {
+		t.Fatalf("queued expired confirmation error = %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.startCalls != 1 {
+		t.Fatalf("expired queued confirmation caused %d starts, want 1", backend.startCalls)
+	}
+}
+
 func TestInvalidTokensNeverAllocateKeyedLocks(t *testing.T) {
 	clk := &fakeClock{now: time.Unix(100, 0)}
 	confirmer := testConfirmer(t, &fakePresence{}, clk)
@@ -648,6 +702,39 @@ func TestInvalidTokensNeverAllocateKeyedLocks(t *testing.T) {
 	defer manager.locksMu.Unlock()
 	if len(manager.locks) != 0 {
 		t.Fatalf("invalid tokens retained %d keyed locks", len(manager.locks))
+	}
+}
+
+func TestInvalidConfirmationDoesNotWaitForBusyServiceLock(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(100, 0)}
+	confirmer := testConfirmer(t, &fakePresence{}, clk)
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	backend := &fakeBackend{startChanged: true, health: healthy(), startGate: gate, startEntered: entered}
+	manager, _ := NewManager(backend, confirmer, testConfig())
+	target := targetFor(PlatformLinux, ServiceSSH)
+	first := confirmedRequest(t, confirmer, target)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.EnsureRunning(context.Background(), first)
+		firstDone <- err
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := manager.EnsureRunning(ctx, Request{
+		Target:       target,
+		Operation:    OperationEnsureRunning,
+		Confirmation: ConfirmationToken{1},
+	})
+	if !IsCode(err, CodeConfirmationInvalid) {
+		t.Fatalf("invalid confirmation queued behind target lock: %v", err)
+	}
+
+	close(gate)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -850,9 +937,11 @@ func TestNilDependenciesAndNilContexts(t *testing.T) {
 		t.Fatalf("manager confirmer error = %v", err)
 	}
 	manager, _ := NewManager(&fakeBackend{}, confirmer, Config{})
+	//lint:ignore SA1012 This deliberately verifies the public API rejects a nil context.
 	if _, err := manager.Detect(nil, targetFor(PlatformLinux, ServiceSSH)); !IsCode(err, CodeInvalidRequest) {
 		t.Fatalf("detect error = %v", err)
 	}
+	//lint:ignore SA1012 This deliberately verifies the mutation API rejects a nil context.
 	if _, err := manager.EnsureRunning(nil, Request{}); !IsCode(err, CodeInvalidRequest) {
 		t.Fatalf("ensure error = %v", err)
 	}

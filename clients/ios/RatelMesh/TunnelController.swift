@@ -33,6 +33,18 @@ final class TunnelController {
         manager?.connection.stopVPNTunnel()
     }
 
+    func waitUntilStopped() async -> Bool {
+        for _ in 0..<50 {
+            switch status {
+            case .disconnected, .invalid:
+                return true
+            default:
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        return status == .disconnected || status == .invalid
+    }
+
     func setExit(_ name: String) async throws {
         let action = name.isEmpty ? "clearExit" : "useExit"
         var object: [String: String] = ["action": action]
@@ -40,13 +52,34 @@ final class TunnelController {
         let reply = try await send(object)
         if let response = try JSONSerialization.jsonObject(with: reply) as? [String: Any],
            response["ok"] as? Bool == false {
-            throw TunnelError.provider(response["error"] as? String ?? "出口切换失败。")
+            let code = (response["code"] as? String)
+                .flatMap(TunnelErrorCode.init(rawValue:))
+                ?? .unknownProviderError
+            throw TunnelError.provider(code)
         }
     }
 
     func statusData() async throws -> Data? {
         guard status == .connected || status == .reasserting else { return nil }
         return try await send(["action": "status"])
+    }
+
+    func networkDoctorDiagnose() async throws -> Data {
+        try await send([
+            "action": "networkDoctorDiagnose",
+            "disclosureVersion": "v1",
+            "confirmed": "true",
+        ])
+    }
+
+    func networkDoctorExecute(planID: String, action: String, confirmed: Bool) async throws -> Data {
+        try await send([
+            "action": "networkDoctorExecute",
+            "planID": planID,
+            "repairAction": action,
+            "disclosureVersion": "v1",
+            "confirmed": confirmed ? "true" : "false",
+        ])
     }
 
 	func setSystemLocation(latitude: Double, longitude: Double) async throws {
@@ -80,14 +113,14 @@ final class TunnelController {
     }
 }
 
-enum TunnelError: LocalizedError {
+enum TunnelError: Error, TunnelErrorCodeProviding {
     case notInstalled
-    case provider(String)
+    case provider(TunnelErrorCode)
 
-    var errorDescription: String? {
+    var tunnelErrorCode: TunnelErrorCode {
         switch self {
-        case .notInstalled: "VPN 配置尚未安装。"
-        case .provider(let message): message
+        case .notInstalled: .vpnProfileUnavailable
+        case .provider(let code): code
         }
     }
 }

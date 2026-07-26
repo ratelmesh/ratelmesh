@@ -7,8 +7,8 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/shan25519/ratelmesh/internal/relay"
-	"github.com/shan25519/ratelmesh/internal/types"
+	"github.com/ratelmesh/ratelmesh/internal/relay"
+	"github.com/ratelmesh/ratelmesh/internal/types"
 )
 
 // RelayBridge makes the ratelmesh-relay usable as a WireGuard transport, so two peers
