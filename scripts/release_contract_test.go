@@ -119,50 +119,6 @@ func TestMacOSBuildersUseCanonicalNumericBundleBuild(t *testing.T) {
 	}
 }
 
-func TestCoordinatorUpdateKeepsTransactionLockThroughRecovery(t *testing.T) {
-	source := readReleaseFile(t, "..", "deploy", "update-coord.sh")
-	orchestration := strings.Index(source, "update-orchestration.lock")
-	handoff := strings.Index(source, "/update.lock")
-	unlockHandoff := strings.Index(source, "flock --unlock 9")
-	restart := strings.Index(source, "systemctl restart ratelmesh-coord.service")
-	if orchestration < 0 || handoff < 0 || orchestration > handoff {
-		t.Fatal("Coordinator orchestration lock must be acquired before the systemd handoff lock")
-	}
-	if unlockHandoff < 0 || restart < 0 || unlockHandoff > restart {
-		t.Fatal("Coordinator handoff lock must be released before systemd restart")
-	}
-	if strings.Contains(source, "flock --unlock 8") {
-		t.Fatal("Coordinator orchestration lock is explicitly released before process exit")
-	}
-}
-
-func TestCoordinatorUpdateRollsBackFinalLivenessFailure(t *testing.T) {
-	source := readReleaseFile(t, "..", "deploy", "update-coord.sh")
-	finalChecks := strings.LastIndex(source, "systemctl is-active --quiet ratelmesh-coord.socket")
-	success := strings.LastIndex(source, `echo "Coordinator updated; stable socket remained active"`)
-	if finalChecks < 0 || success < 0 || finalChecks > success {
-		t.Fatal("Coordinator update has no final liveness gate before success")
-	}
-	finalBlock := source[finalChecks:success]
-	if !strings.Contains(finalBlock, "rollback") {
-		t.Fatal("Coordinator update does not roll back when its final liveness gate fails")
-	}
-}
-
-func TestCoordinatorRollbackRestoresBinaryAtomically(t *testing.T) {
-	source := readReleaseFile(t, "..", "deploy", "update-coord.sh")
-	rollback := strings.Index(source, "rollback()")
-	restart := strings.Index(source[rollback:], "systemctl restart ratelmesh-coord.service")
-	if rollback < 0 || restart < 0 {
-		t.Fatal("Coordinator update has no rollback restart path")
-	}
-	rollbackBlock := source[rollback : rollback+restart]
-	if !strings.Contains(rollbackBlock, `install -m0755 "$PREVIOUS" "$RESTORE"`) ||
-		!strings.Contains(rollbackBlock, `mv -f "$RESTORE" "$BIN"`) {
-		t.Fatal("Coordinator rollback overwrites a possibly running executable in place")
-	}
-}
-
 func TestLinuxServiceKeepsEnrollmentSecretOutOfArgv(t *testing.T) {
 	service := readReleaseFile(t, "..", "clients", "linux", "ratelmeshd.service")
 	if strings.Contains(service, "-authkey") || strings.Contains(service, "${RATELMESH_AUTHKEY}") {

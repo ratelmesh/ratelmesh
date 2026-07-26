@@ -1,12 +1,22 @@
-.PHONY: build build-wgreal build-windows mobile-ios mobile-android release-ios release-android test vet clean run-coord
+.PHONY: build build-server build-wgreal build-windows mobile-ios mobile-android release-ios release-android test vet clean run-coord
 
 BIN := bin
 PKGS := ./...
 
 build:
-	go build -o $(BIN)/ratelmesh-coord ./cmd/ratelmesh-coord
+	mkdir -p $(BIN)
 	go build -o $(BIN)/ratelmeshd ./cmd/ratelmeshd
 	go build -o $(BIN)/ratelmesh ./cmd/ratelmesh
+	@if test -d ./cmd/ratelmesh-coord; then \
+		go build -o $(BIN)/ratelmesh-coord ./cmd/ratelmesh-coord; \
+	fi
+
+build-server:
+	@test -d ./cmd/ratelmesh-coord || { \
+		echo "Coordinator source is maintained in the private server repository" >&2; \
+		exit 2; \
+	}
+	go build -o $(BIN)/ratelmesh-coord ./cmd/ratelmesh-coord
 
 # Real WireGuard data plane. Requires `wireguard-go` and `wg` on PATH at runtime
 # and elevated privileges to create the TUN device.
@@ -42,5 +52,5 @@ vet:
 clean:
 	rm -rf $(BIN)
 
-run-coord: build
+run-coord: build-server
 	$(BIN)/ratelmesh-coord -addr 127.0.0.1:8080

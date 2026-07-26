@@ -1,97 +1,103 @@
 # RatelMesh
 
-> The AI teammate that helps you secure and manage your digital life.
+RatelMesh is a WireGuard-based private network for individuals and small
+businesses. It connects a user's devices, supports a user-owned EXIT device,
+and provides privacy-aware diagnostics, temporary remote access, and encrypted
+file-transfer primitives.
 
-A WireGuard-based product that is **both** a Tailscale-style mesh network (zero-config
-device overlay, NAT traversal, ACLs) **and** a NordVPN-style VPN with global exit nodes.
-The unifying idea: an exit node is just a mesh peer whose `AllowedIPs` is `0.0.0.0/0`.
-See [`DESIGN.md`](DESIGN.md) for the full architecture.
+## Repository boundary
 
-Long-lived company, infrastructure, domain, and release decisions are recorded in
-[`docs/project-context.md`](docs/project-context.md). Keep that document free of
-credentials and customer-identifying data.
+The public `ratelmesh/ratelmesh` repository contains the client source:
+
+- the `ratelmeshd` client daemon and `ratelmesh` CLI;
+- Linux, macOS, Windows, Android, and iPhone/iPad clients;
+- the rootless and real WireGuard data-plane implementations;
+- the client side of control, relay, remote-access, Network Doctor, and
+  end-to-end encrypted file transfer;
+- reproducible client build, packaging, and verification tools.
+
+The hosted Coordinator, Relay admission service, Tenant Console, website, and
+production deployment configuration are maintained separately. Their private
+implementation and credentials are not required to inspect, build, test, or
+modify the clients in this repository.
+
+Security boundaries and current limitations are documented in
+[`SECURITY.md`](SECURITY.md). Client behavior and command usage are documented
+in [`docs/clients.md`](docs/clients.md) and [`docs/cli.md`](docs/cli.md).
 
 ## Status
 
-All major sections of `DESIGN.md` are implemented and tested (`go test -race` green).
-The WireGuard data plane is behind an interface: the
-default build uses a rootless **stub** (so all control logic runs anywhere, including CI);
-the real userspace/kernel data plane is behind `-tags wgreal`.
+RatelMesh is beta software. Release artifacts state their signing and
+installation status individually:
 
-What runs today, end to end:
+- macOS packages require Developer ID signing and Apple notarization before
+  normal end-user installation;
+- Windows archives are not yet Authenticode signed;
+- Android artifacts are debug-signed test builds;
+- iPhone/iPad artifacts are unsigned developer previews and are not directly
+  installable.
 
-- **Mesh (Tailscale-style):** device registration, `100.64.0.0/10` allocation, long-poll
-  netmap, STUN endpoint discovery + hole-punching with direct/relay path selection,
-  DERP-style relay, MagicDNS (`device.user.ratelmesh.net`), subnet routers (`--accept-routes`).
-- **Exit (NordVPN-style):** `ratelmesh exit use <region>`, default-route capture through the
-  chosen exit, kill switch (fail-closed pf/nftables), DNS-leak protection.
-- **Anti-censorship (§8):** pluggable obfuscation transport (look-like-nothing ChaCha20)
-  wired into the relay, split-tunnel routing engine (domain/CIDR/GeoIP → direct/tunnel/block).
-- **Control & security:** ACL policy engine with server-side netmap trimming, authkeys
-  (reusable/ephemeral/tagged), web admin console (`/admin`).
-- **Clients:** Linux/macOS daemon + CLI/web GUI; Windows WireGuard service + named-pipe
-  CLI/web GUI; native SwiftUI iOS Packet Tunnel and Android Compose/VpnService apps.
-
-Remaining work is release productionization: Authenticode/App Store/Play signing,
-physical-device roaming E2E, publisher privacy-policy hosting and store-account submission,
-and multi-writer PostgreSQL state. See the status note at the top of `DESIGN.md`.
+Use the [official website](https://ratelmesh.com) and the
+[GitHub Releases page](https://github.com/ratelmesh/ratelmesh/releases) for
+published builds. Verify downloaded artifacts against `SHA256SUMS.txt`.
 
 ## Components
 
-| Binary | Role |
-|--------|------|
-| `ratelmesh-coord` | Control plane: registration, IP allocation, netmap long-poll, ACLs, authkeys, `/admin` console |
-| `ratelmeshd` | Client daemon: identity, control connection, data plane, magicsock, MagicDNS, kill switch, local API + web GUI |
-| `ratelmesh` | CLI front-end: `status`, `exit use/list/clear`, `dns` (localized) |
-| `ratelmesh-relay` | DERP-style ciphertext relay + co-located STUN, optional obfuscation |
-| `mobile/` | gomobile control/data-plane contract shared by iOS and Android |
-| `clients/windows/` | Windows packaging, DPAPI config and scheduled-task installer |
-| `clients/ios/` | SwiftUI app + `NEPacketTunnelProvider` + WireGuardKit |
-| `clients/android/` | Compose app + foreground service + WireGuard GoBackend |
+| Path | Role |
+| --- | --- |
+| `cmd/ratelmeshd` | Client daemon: identity, control connection, data plane, MagicDNS, EXIT routing, local API |
+| `cmd/ratelmesh` | Localized CLI for status, EXIT, DNS, diagnostics, and client operations |
+| `mobile/` | Shared mobile control/data-plane contract |
+| `clients/android/` | Android Compose app and VPN service |
+| `clients/ios/` | SwiftUI app and Network Extension |
+| `clients/macos-menubar/` | macOS menu-bar app |
+| `clients/windows/` | Windows packaging and service integration |
+| `clients/linux/` | Linux service, installer, and uninstaller |
+| `internal/wgengine/` | Rootless stub and `wgreal` WireGuard data planes |
 
-## Build
+The default Go build is dependency-light and uses the rootless stub data plane.
+The real macOS/Linux WireGuard implementation is selected with `-tags wgreal`.
 
-```sh
-make build          # builds bin/{ratelmesh-coord,ratelmeshd,ratelmesh}
-make test           # unit + end-to-end tests (rootless)
-make build-wgreal   # real WireGuard data plane (needs wireguard-go + wg at runtime)
-make build-windows  # Windows amd64 ratelmeshd+ratelmesh (requires WireGuard for Windows at runtime)
-make mobile-ios     # generate RatelMeshMobile.xcframework
-make mobile-android # generate ratelmesh-mobile.aar
-```
+## Build and test
 
-## Try it locally
+Go 1.26 is required.
 
 ```sh
-# terminal 1 — control plane
-./bin/ratelmesh-coord -addr 127.0.0.1:8080
-
-# terminal 2 — first device
-./bin/ratelmeshd -coord http://127.0.0.1:8080 -state /tmp/ratelmeshA -socket /tmp/ratelmesha.sock -hostname alice
-
-# terminal 3 — an exit node
-./bin/ratelmeshd -coord http://127.0.0.1:8080 -state /tmp/ratelmeshB -socket /tmp/ratelmeshb.sock -hostname tokyo -role exit
-
-# terminal 4 — inspect the mesh
-RATELMESH_SOCKET=/tmp/ratelmesha.sock ./bin/ratelmesh status
-RATELMESH_SOCKET=/tmp/ratelmesha.sock ./bin/ratelmesh exit list
+make build
+make build-wgreal
+go test -race ./...
+go test -race -tags wgreal ./...
+make vet
 ```
 
-## Layout
+`make build` creates `bin/ratelmeshd` and `bin/ratelmesh` in the public
+checkout. In the private server monorepo it also builds the Coordinator; the
+explicit `make build-server` target fails with a clear message when server
+source is not present.
 
-```
-cmd/            ratelmesh-coord, ratelmeshd, ratelmesh entry points
-internal/
-  types/        shared data model (keys, Node, Netmap, API contract)
-  coord/        control plane: registry, IP allocator, long-poll server
-  control/      coord protocol client (used by ratelmeshd)
-  daemon/       ratelmeshd core: state, run loop, netmap→data-plane, local API
-  wgengine/     data-plane interface + rootless stub + wgreal real engine
-clients/
-  windows/      Windows installer/runtime packaging
-  ios/          SwiftUI + Packet Tunnel Provider
-  android/      Compose + Android VPN service
+Platform helpers:
+
+```sh
+make build-windows
+make mobile-ios
+make mobile-android
 ```
 
-Security note: device private keys are generated locally and never sent to the coord
-(only public keys are). See `DESIGN.md` §5.
+These commands require their respective platform SDKs and toolchains. Client
+installation and release-specific instructions are in
+[`docs/clients.md`](docs/clients.md) and [`docs/releases/`](docs/releases/).
+
+## Security model
+
+Device private keys are generated locally and are never sent to the
+Coordinator. Remote-access authorization is temporary and authority-signed;
+RatelMesh does not store login passwords on the server. File-transfer content
+is end-to-end encrypted and authenticated by the participating devices.
+
+Please report vulnerabilities privately using the process in
+[`SECURITY.md`](SECURITY.md).
+
+## License
+
+The public client source is licensed under the GNU Affero General Public
+License v3.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
