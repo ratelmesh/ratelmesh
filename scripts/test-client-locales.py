@@ -46,10 +46,20 @@ def json_catalog(path: Path) -> dict[str, str]:
     return catalog
 
 
-def android_catalog(path: Path) -> dict[str, str]:
-    if not path.is_file():
-        fail(f"missing {path.relative_to(ROOT)}")
-    return {node.attrib["name"]: "".join(node.itertext()) for node in ET.parse(path).getroot().findall("string")}
+def android_catalog(directory: Path) -> dict[str, str]:
+    if not directory.is_dir():
+        fail(f"missing {directory.relative_to(ROOT)}")
+    catalog: dict[str, str] = {}
+    files = sorted(directory.glob("*.xml"))
+    if not files:
+        fail(f"{directory.relative_to(ROOT)} has no resource catalogs")
+    for path in files:
+        for node in ET.parse(path).getroot().findall("string"):
+            key = node.attrib["name"]
+            if key in catalog:
+                fail(f"duplicate Android key {key!r} in {path.relative_to(ROOT)}")
+            catalog[key] = "".join(node.itertext())
+    return catalog
 
 
 def placeholders(value: str) -> tuple[str, ...]:
@@ -88,9 +98,9 @@ base_internal = json_catalog(ROOT / "internal/i18n/locales/en.json")
 for locale, filename in INTERNAL_FILES.items():
     verify_catalog(base_internal, json_catalog(ROOT / f"internal/i18n/locales/{filename}.json"), f"internal {locale}")
 
-base_android = android_catalog(ROOT / "clients/android/app/src/main/res/values/strings.xml")
+base_android = android_catalog(ROOT / "clients/android/app/src/main/res/values")
 for locale, dirname in ANDROID_DIRS.items():
-    verify_catalog(base_android, android_catalog(ROOT / f"clients/android/app/src/main/res/{dirname}/strings.xml"), f"Android {locale}")
+    verify_catalog(base_android, android_catalog(ROOT / f"clients/android/app/src/main/res/{dirname}"), f"Android {locale}")
 
 android_namespace = "{http://schemas.android.com/apk/res/android}"
 configured_android = tuple(
@@ -104,7 +114,14 @@ apple_catalogs: dict[Path, set[str]] = {}
 for root in (ROOT / "clients/macos-menubar/Localizations", ROOT / "clients/ios/RatelMesh"):
     reference: set[str] | None = None
     for locale, dirname in APPLE_DIRS.items():
-        entries = strings_file(root / f"{dirname}.lproj/Localizable.strings")
+        entries: dict[str, str] = {}
+        for filename in ("Localizable.strings", "NetworkDoctor.strings"):
+            catalog = strings_file(root / f"{dirname}.lproj/{filename}")
+            duplicate = set(entries) & set(catalog)
+            conflicting = {key for key in duplicate if entries[key] != catalog[key]}
+            if conflicting:
+                fail(f"{root.relative_to(ROOT)} {locale} conflicts in {filename}: {sorted(conflicting)}")
+            entries.update(catalog)
         keys = set(entries)
         if reference is None:
             reference = keys
