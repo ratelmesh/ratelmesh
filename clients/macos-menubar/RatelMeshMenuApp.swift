@@ -340,8 +340,8 @@ private final class NetworkDoctorStore: ObservableObject {
     @Published private(set) var error: NetworkDoctorContractError?
     private let gateway: NetworkDoctorGateway
 
-    init(gateway: NetworkDoctorGateway = LocalNetworkDoctorGateway()) {
-        self.gateway = gateway
+    init(gateway: NetworkDoctorGateway? = nil) {
+        self.gateway = gateway ?? LocalNetworkDoctorGateway()
     }
 
     var canRepair: Bool {
