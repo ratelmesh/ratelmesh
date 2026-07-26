@@ -9,6 +9,7 @@ fi
 VERSION=$1
 OUTDIR=$2
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+"$REPO/scripts/test-client-locales.py"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ratelmesh-desktop-release.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 mkdir -p "$OUTDIR"

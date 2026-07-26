@@ -263,9 +263,9 @@ struct ContentView: View {
                 }
                 Section(t("语言", "Language")) {
                     Picker(t("界面语言", "App language"), selection: $language) {
-                        Text(t("跟随系统", "System")).tag(ProductLanguage.system)
-                        Text("简体中文").tag(ProductLanguage.chinese)
-                        Text("English").tag(ProductLanguage.english)
+                        ForEach(ProductLanguage.allCases) { option in
+                            Text(option.displayName).tag(option)
+                        }
                     }
                 }
             }
@@ -292,10 +292,10 @@ struct ContentView: View {
     private var statusDetail: String {
         if let active = model.meshStatus?.activeExit, !active.isEmpty {
             return model.meshStatus?.exitTrafficVerified == true
-                ? t("互联网线路：EXIT 已验证 · \(active)", "Internet route: EXIT verified · \(active)")
-                : t("已选择 EXIT，正在验证流量 · \(active)", "EXIT selected; verifying traffic · \(active)")
+                ? f("互联网线路：EXIT 已验证 · %@", "Internet route: EXIT verified · %@", active)
+                : f("已选择 EXIT，正在验证流量 · %@", "EXIT selected; verifying traffic · %@", active)
         }
-        if !model.reportedSelectedExit.isEmpty { return t("正在建立 EXIT · \(model.reportedSelectedExit)", "Connecting EXIT · \(model.reportedSelectedExit)") }
+        if !model.reportedSelectedExit.isEmpty { return f("正在建立 EXIT · %@", "Connecting EXIT · %@", model.reportedSelectedExit) }
         return model.isConnected ? t("互联网线路：DIRECT 直连", "Internet route: DIRECT") : t("设备流量未进入隧道", "Device traffic is not using the tunnel")
     }
 
@@ -303,15 +303,15 @@ struct ContentView: View {
 
     private var routeStatus: String {
         if let requested = model.requestedExit {
-            return requested.isEmpty ? t("正在切换到 DIRECT…", "Switching to DIRECT…") : t("正在切换到 EXIT · \(requested)…", "Switching to EXIT · \(requested)…")
+            return requested.isEmpty ? t("正在切换到 DIRECT…", "Switching to DIRECT…") : f("正在切换到 EXIT · %@…", "Switching to EXIT · %@…", requested)
         }
         if !model.reportedSelectedExit.isEmpty && model.activeExit.isEmpty {
-            return t("正在建立 EXIT · \(model.reportedSelectedExit)…", "Connecting EXIT · \(model.reportedSelectedExit)…")
+            return f("正在建立 EXIT · %@…", "Connecting EXIT · %@…", model.reportedSelectedExit)
         }
         if model.activeExit.isEmpty { return t("当前线路：DIRECT 直连", "Current route: DIRECT") }
         return model.meshStatus?.exitTrafficVerified == true
-            ? t("当前线路：EXIT 已验证 · \(model.activeExit)", "Current route: EXIT verified · \(model.activeExit)")
-            : t("已选择 EXIT，正在验证流量 · \(model.activeExit)", "EXIT selected; verifying traffic · \(model.activeExit)")
+            ? f("当前线路：EXIT 已验证 · %@", "Current route: EXIT verified · %@", model.activeExit)
+            : f("已选择 EXIT，正在验证流量 · %@", "EXIT selected; verifying traffic · %@", model.activeExit)
     }
 
     private func exitClientState(_ state: String) -> String {
@@ -322,9 +322,11 @@ struct ContentView: View {
         }
     }
 
-    private var usesChinese: Bool {
-        language == .chinese || (language == .system && Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true)
+    private func t(_ chinese: String, _ english: String) -> String {
+        language.localized(english, chineseFallback: chinese)
     }
 
-    private func t(_ chinese: String, _ english: String) -> String { usesChinese ? chinese : english }
+    private func f(_ chinese: String, _ english: String, _ arguments: CVarArg...) -> String {
+        String(format: t(chinese, english), arguments: arguments)
+    }
 }

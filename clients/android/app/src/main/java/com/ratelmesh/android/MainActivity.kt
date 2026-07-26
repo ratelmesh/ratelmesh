@@ -554,17 +554,37 @@ private fun LanguageSelector(
 @Composable
 private fun languageLabel(language: AppLanguage): String = when (language) {
     AppLanguage.SYSTEM -> stringResource(R.string.language_system)
+    AppLanguage.ENGLISH -> "English"
+    AppLanguage.SPANISH -> "Español"
+    AppLanguage.GERMAN -> "Deutsch"
+    AppLanguage.FRENCH -> "Français"
+    AppLanguage.JAPANESE -> "日本語"
+    AppLanguage.KOREAN -> "한국어"
+    AppLanguage.ITALIAN -> "Italiano"
+    AppLanguage.DUTCH -> "Nederlands"
+    AppLanguage.POLISH -> "Polski"
+    AppLanguage.SWEDISH -> "Svenska"
+    AppLanguage.PORTUGUESE_BRAZIL -> "Português (Brasil)"
     AppLanguage.SIMPLIFIED_CHINESE -> "简体中文"
     AppLanguage.TRADITIONAL_CHINESE -> "繁體中文"
-    AppLanguage.ENGLISH -> "English"
 }
 
 @Composable
 private fun languageShortLabel(language: AppLanguage): String = when (language) {
     AppLanguage.SYSTEM -> stringResource(R.string.language_short_system)
+    AppLanguage.ENGLISH -> "EN"
+    AppLanguage.SPANISH -> "ES"
+    AppLanguage.GERMAN -> "DE"
+    AppLanguage.FRENCH -> "FR"
+    AppLanguage.JAPANESE -> "JA"
+    AppLanguage.KOREAN -> "KO"
+    AppLanguage.ITALIAN -> "IT"
+    AppLanguage.DUTCH -> "NL"
+    AppLanguage.POLISH -> "PL"
+    AppLanguage.SWEDISH -> "SV"
+    AppLanguage.PORTUGUESE_BRAZIL -> "PT"
     AppLanguage.SIMPLIFIED_CHINESE -> stringResource(R.string.language_short_simplified)
     AppLanguage.TRADITIONAL_CHINESE -> stringResource(R.string.language_short_traditional)
-    AppLanguage.ENGLISH -> stringResource(R.string.language_short_english)
 }
 
 @Composable

@@ -40,7 +40,20 @@ private final class SystemLocationReporter: NSObject, CLLocationManagerDelegate 
 
 private enum Copy {
     enum Language: String, CaseIterable, Identifiable {
-        case system, chinese, english
+        case system
+        case english
+        case spanish = "es"
+        case german = "de"
+        case french = "fr"
+        case japanese = "ja"
+        case korean = "ko"
+        case italian = "it"
+        case dutch = "nl"
+        case polish = "pl"
+        case swedish = "sv"
+        case portugueseBrazil = "pt-BR"
+        case chinese = "chinese"
+        case traditionalChinese = "zh-Hant"
         var id: String { rawValue }
     }
 
@@ -49,15 +62,26 @@ private enum Copy {
     }
 
     static var chinese: Bool {
-        switch language {
-        case .chinese: true
-        case .english: false
-        case .system: Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
-        }
+        language == .chinese || language == .traditionalChinese
+            || (language == .system && Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true)
     }
 
     static func text(_ english: String, _ chinese: String) -> String {
-        Self.chinese ? chinese : english
+        let selected = language
+        let systemChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
+        let fallback = selected == .chinese || selected == .traditionalChinese || (selected == .system && systemChinese) ? chinese : english
+        if selected == .english { return english }
+        if selected == .system {
+            return Bundle.main.localizedString(forKey: english, value: fallback, table: nil)
+        }
+        let tag = selected == .chinese ? "zh-Hans" : selected.rawValue
+        guard let path = Bundle.main.path(forResource: tag, ofType: "lproj"),
+              let bundle = Bundle(path: path) else { return fallback }
+        return bundle.localizedString(forKey: english, value: fallback, table: nil)
+    }
+
+    static func format(_ english: String, _ chinese: String, _ arguments: CVarArg...) -> String {
+        String(format: text(english, chinese), arguments: arguments)
     }
 
     static func select(_ language: Language) {
@@ -67,8 +91,19 @@ private enum Copy {
     static func languageName(_ language: Language) -> String {
         switch language {
         case .system: text("System", "跟随系统")
-        case .chinese: "简体中文"
         case .english: "English"
+        case .spanish: "Español"
+        case .german: "Deutsch"
+        case .french: "Français"
+        case .japanese: "日本語"
+        case .korean: "한국어"
+        case .italian: "Italiano"
+        case .dutch: "Nederlands"
+        case .polish: "Polski"
+        case .swedish: "Svenska"
+        case .portugueseBrazil: "Português (Brasil)"
+        case .chinese: "简体中文"
+        case .traditionalChinese: "繁體中文"
         }
     }
 }
@@ -259,7 +294,7 @@ private struct Panel: View {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
                     GridRow { Text(Copy.text("State", "状态")).foregroundStyle(.secondary); Text(localState(status.state)) }
                     GridRow { Text(Copy.text("This device", "本机")).foregroundStyle(.secondary); Text("\(status.selfNode.meshIP)  \(status.selfNode.name)").lineLimit(1) }
-                    GridRow { Text(Copy.text("Exit", "出口")).foregroundStyle(.secondary); Text(status.activeExit.isEmpty ? (status.selectedExit.isEmpty ? Copy.text("none (direct)", "无（直连）") : Copy.text("connecting \(status.selectedExit)", "正在连接 \(status.selectedExit)")) : status.activeExit).lineLimit(1) }
+                    GridRow { Text(Copy.text("Exit", "出口")).foregroundStyle(.secondary); Text(status.activeExit.isEmpty ? (status.selectedExit.isEmpty ? Copy.text("none (direct)", "无（直连）") : Copy.format("connecting %@", "正在连接 %@", status.selectedExit)) : status.activeExit).lineLimit(1) }
                     GridRow { Text(Copy.text("Leak protection", "泄漏保护")).foregroundStyle(.secondary); Text(status.killSwitch ? Copy.text("On", "已开启") : Copy.text("Off", "关闭")) }
                 }
 
@@ -396,7 +431,7 @@ private struct Panel: View {
                     Text("v\(ProductInfo.version)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel(Copy.text("Version \(ProductInfo.version)", "版本 \(ProductInfo.version)"))
+                        .accessibilityLabel(Copy.format("Version %@", "版本 %@", ProductInfo.version))
                 }
                 HStack {
                     Button(Copy.text("Privacy center…", "隐私中心…")) { LocationPrivacyReminder.openPrivacyCenter() }
@@ -443,16 +478,16 @@ private struct Panel: View {
         if let requested {
             return requested.isEmpty
                 ? Copy.text("Switching to DIRECT…", "正在切换到 DIRECT…")
-                : Copy.text("Selecting EXIT · \(requested)…", "正在选择 EXIT · \(requested)…")
+                : Copy.format("Selecting EXIT · %@…", "正在选择 EXIT · %@…", requested)
         }
         if !status.activeExit.isEmpty {
             if !status.exitTrafficVerified {
                 return Copy.text("EXIT route active · verifying traffic…", "EXIT 路由已启用 · 正在验证流量…")
             }
-            return Copy.text("EXIT verified · \(status.activeExit)", "EXIT 已验证 · \(status.activeExit)")
+            return Copy.format("EXIT verified · %@", "EXIT 已验证 · %@", status.activeExit)
         }
         if !status.selectedExit.isEmpty {
-            return Copy.text("Establishing EXIT · \(status.selectedExit)…", "正在建立 EXIT · \(status.selectedExit)…")
+            return Copy.format("Establishing EXIT · %@…", "正在建立 EXIT · %@…", status.selectedExit)
         }
         return Copy.text("DIRECT verified", "DIRECT 已验证")
     }
@@ -510,9 +545,11 @@ private struct Panel: View {
                 enrollmentCode = ""
                 await store.refresh()
             } catch {
-                enrollmentError = Copy.chinese
-                    ? "注册未完成：\(error.localizedDescription)"
-                    : "Enrollment did not complete: \(error.localizedDescription)"
+                enrollmentError = Copy.format(
+                    "Enrollment did not complete: %@",
+                    "注册未完成：%@",
+                    error.localizedDescription
+                )
             }
             enrollmentBusy = false
         }
@@ -571,7 +608,7 @@ private struct Panel: View {
                 .font(.caption).foregroundStyle(.secondary)
         case .available:
             HStack {
-                Text(Copy.text("v\(updater.manifest?.version ?? "") is available.", "发现 v\(updater.manifest?.version ?? "")。"))
+                Text(Copy.format("v%@ is available.", "发现 v%@。", updater.manifest?.version ?? ""))
                 Spacer()
                 Button(Copy.text("Download", "下载")) {
                     Task { await updater.downloadAvailableUpdate() }
@@ -586,23 +623,25 @@ private struct Panel: View {
             .font(.caption).foregroundStyle(.secondary)
         case .ready:
             HStack {
-                Text(Copy.text("v\(updater.manifest?.version ?? "") is ready.", "v\(updater.manifest?.version ?? "") 已准备好。"))
+                Text(Copy.format("v%@ is ready.", "v%@ 已准备好。", updater.manifest?.version ?? ""))
                 Spacer()
                 Button(Copy.text("Install", "安装")) { updater.installDownloadedUpdate() }
             }
             .font(.caption)
         case .failed:
-            Text(updater.failureMessage(chinese: Copy.chinese))
+            Text(Copy.text(
+                updater.failureMessage(chinese: false),
+                updater.failureMessage(chinese: true)
+            ))
                 .font(.caption).foregroundStyle(.red)
         }
     }
 
     private func localState(_ state: String) -> String {
-        guard Copy.chinese else { return state }
         switch state {
-        case "Running": return "运行中"
-        case "Starting": return "启动中"
-        case "Stopped": return "已停止"
+        case "Running": return Copy.text("Running", "运行中")
+        case "Starting": return Copy.text("Starting", "启动中")
+        case "Stopped": return Copy.text("Stopped", "已停止")
         default: return state
         }
     }

@@ -24,6 +24,7 @@ if [[ "$UPDATE_FEED_URL" != https://download.ratelmesh.com/download/* ]]; then
 fi
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+"$REPO/scripts/test-client-locales.py"
 # shellcheck disable=SC1091
 source "$REPO/packaging/macos/dependencies.env"
 if [[ "$(GOTOOLCHAIN=local go version | awk '{print $3}')" != "$RATELMESH_GO_VERSION" ]]; then
@@ -75,6 +76,12 @@ install -m 644 "$REPO/clients/macos-menubar/RatelMesh.icns" \
   "$APP/Contents/Resources/RatelMesh.icns"
 install -m 644 "$REPO/clients/macos-menubar/BrandMarkDark.png" \
   "$APP/Contents/Resources/BrandMarkDark.png"
+if [[ -d "$REPO/clients/macos-menubar/Localizations" ]]; then
+  for localization in "$REPO"/clients/macos-menubar/Localizations/*.lproj; do
+    [[ -d "$localization" ]] || continue
+    ditto "$localization" "$APP/Contents/Resources/$(basename "$localization")"
+  done
+fi
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "${VERSION//./}" "$APP/Contents/Info.plist"
 plutil -replace RatelMeshUpdateFeedURL -string "$UPDATE_FEED_URL" "$APP/Contents/Info.plist" 2>/dev/null || \

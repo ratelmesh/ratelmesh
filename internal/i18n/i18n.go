@@ -83,6 +83,8 @@ func NewPrinter(locale string) *Printer {
 	switch {
 	case locale == "zh", locale == "zh-CN", locale == "zh-SG", strings.HasPrefix(locale, "zh-Hans-"):
 		chain = append(chain, "zh-Hans")
+	case locale == "zh-TW", locale == "zh-HK", locale == "zh-MO", strings.HasPrefix(locale, "zh-Hant-"):
+		chain = append(chain, "zh-Hant")
 	}
 	if base := baseLang(locale); base != locale {
 		chain = append(chain, base)

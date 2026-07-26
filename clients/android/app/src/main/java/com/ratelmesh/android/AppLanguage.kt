@@ -6,9 +6,19 @@ import java.util.Locale
 
 internal enum class AppLanguage(val tag: String) {
     SYSTEM("system"),
+    ENGLISH("en"),
+    SPANISH("es"),
+    GERMAN("de"),
+    FRENCH("fr"),
+    JAPANESE("ja"),
+    KOREAN("ko"),
+    ITALIAN("it"),
+    DUTCH("nl"),
+    POLISH("pl"),
+    SWEDISH("sv"),
+    PORTUGUESE_BRAZIL("pt-BR"),
     SIMPLIFIED_CHINESE("zh-CN"),
     TRADITIONAL_CHINESE("zh-TW"),
-    ENGLISH("en"),
 }
 
 internal object AppLanguagePreferences {

@@ -3,6 +3,28 @@ import CryptoKit
 import Darwin
 import Foundation
 
+private enum UpdateCopy {
+    static func text(_ english: String, _ simplifiedChinese: String) -> String {
+        let selected = UserDefaults.standard.string(forKey: "ratelmesh.language") ?? "system"
+        let systemChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
+        let fallback = selected == "chinese" || selected == "zh-Hant" || (selected == "system" && systemChinese)
+            ? simplifiedChinese
+            : english
+        if selected == "english" { return english }
+        if selected == "system" {
+            return Bundle.main.localizedString(forKey: english, value: fallback, table: nil)
+        }
+        let tag = selected == "chinese" ? "zh-Hans" : selected
+        guard let path = Bundle.main.path(forResource: tag, ofType: "lproj"),
+              let bundle = Bundle(path: path) else { return fallback }
+        return bundle.localizedString(forKey: english, value: fallback, table: nil)
+    }
+
+    static func format(_ english: String, _ simplifiedChinese: String, _ arguments: CVarArg...) -> String {
+        String(format: text(english, simplifiedChinese), arguments: arguments)
+    }
+}
+
 enum ProductInfo {
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
@@ -793,15 +815,16 @@ final class UpdateStore: ObservableObject {
     }
 
     private func presentInstallPrompt(version: String) {
-        let chinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = chinese ? "更新已准备好" : "Update ready"
-        alert.informativeText = chinese
-            ? "RatelMesh v\(version) 已下载并通过签名校验。现在打开系统安装器吗？"
-            : "RatelMesh v\(version) was downloaded and verified. Open the system installer now?"
-        alert.addButton(withTitle: chinese ? "现在安装" : "Install now")
-        alert.addButton(withTitle: chinese ? "稍后" : "Later")
+        alert.messageText = UpdateCopy.text("Update ready", "更新已准备好")
+        alert.informativeText = UpdateCopy.format(
+            "RatelMesh v%@ was downloaded and verified. Open the system installer now?",
+            "RatelMesh v%@ 已下载并通过签名校验。现在打开系统安装器吗？",
+            version
+        )
+        alert.addButton(withTitle: UpdateCopy.text("Install now", "现在安装"))
+        alert.addButton(withTitle: UpdateCopy.text("Later", "稍后"))
         if alert.runModal() == .alertFirstButtonReturn {
             installDownloadedUpdate()
         }

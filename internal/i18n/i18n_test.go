@@ -35,7 +35,7 @@ func TestChinesePluralHasNoSingular(t *testing.T) {
 
 func TestFallbackToEnglish(t *testing.T) {
 	// A locale with no catalog falls back to English.
-	p := NewPrinter("fr-FR")
+	p := NewPrinter("xx-YY")
 	if got := p.T("status.nopeers"); got != "No peers yet." {
 		t.Errorf("fallback: %q", got)
 	}
@@ -48,6 +48,13 @@ func TestBaseLanguageFallback(t *testing.T) {
 	}
 	if got := p.T("exit.cleared"); got != "已恢复直连出网（未使用出口）。" {
 		t.Errorf("zh exit.cleared: %q", got)
+	}
+}
+
+func TestTraditionalChineseRegionFallback(t *testing.T) {
+	p := NewPrinter("zh_TW.UTF-8")
+	if got := p.T("exit.cleared"); got != "已恢復直接連線（未使用出口節點）。" {
+		t.Errorf("zh-TW exit.cleared: %q", got)
 	}
 }
 
@@ -74,7 +81,7 @@ func TestAvailableIncludesShippedLocales(t *testing.T) {
 	for _, c := range Available() {
 		got[c] = true
 	}
-	for _, want := range []string{"en", "zh-Hans", "ja"} {
+	for _, want := range []string{"en", "es", "de", "fr", "ja", "ko", "it", "nl", "pl", "sv", "pt-BR", "zh-Hans", "zh-Hant"} {
 		if !got[want] {
 			t.Errorf("missing locale %q in %v", want, Available())
 		}

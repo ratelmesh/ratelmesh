@@ -34,6 +34,13 @@ ASSET_CATALOG="$BUILD_ROOT/Release-iphoneos/RatelMesh.app/Assets.car"
 test -s "$ASSET_CATALOG"
 xcrun assetutil --info "$ASSET_CATALOG" | grep -q '"Name" : "BrandMarkDark"'
 
+EXPECTED_LOCALES="de es fr it ja ko nl pl pt-BR sv zh-Hans zh-Hant"
+ACTUAL_LOCALES=$(find "$BUILD_ROOT/Release-iphoneos/RatelMesh.app" -maxdepth 1 -type d -name '*.lproj' -exec basename {} .lproj \; | sort | tr '\n' ' ' | sed 's/ $//')
+if [ "$ACTUAL_LOCALES" != "$EXPECTED_LOCALES" ]; then
+    echo "iOS app localization bundle mismatch: got '$ACTUAL_LOCALES', want '$EXPECTED_LOCALES'" >&2
+    exit 1
+fi
+
 for manifest in \
     "$BUILD_ROOT/Release-iphoneos/RatelMesh.app/PrivacyInfo.xcprivacy" \
     "$BUILD_ROOT/Release-iphoneos/RatelMesh.app/PlugIns/PacketTunnel.appex/PrivacyInfo.xcprivacy"; do
