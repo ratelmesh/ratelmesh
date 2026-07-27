@@ -36,7 +36,7 @@ private final class SystemLocationProvider: NSObject, CLLocationManagerDelegate 
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    @Published var coordinatorURL = ""
+    @Published var coordinatorURL = AppConstants.officialCoordinatorURL
     @Published var authKey = ""
     @Published var hostname = AppViewModel.defaultHostname
     @Published private(set) var vpnStatus: NEVPNStatus = .invalid
@@ -108,7 +108,9 @@ final class AppViewModel: ObservableObject {
             appGroupReady = true
             observeProviderError()
             if let saved = try store.load() {
-                coordinatorURL = saved.coordinatorURL
+                coordinatorURL = saved.coordinatorURL.isEmpty
+                    ? AppConstants.officialCoordinatorURL
+                    : saved.coordinatorURL
                 authKey = saved.authKey
                 hostname = saved.hostname
             } else {

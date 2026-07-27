@@ -20,6 +20,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this iPhone or iPad.</string>
 	<key>RatelMeshAppGroup</key>

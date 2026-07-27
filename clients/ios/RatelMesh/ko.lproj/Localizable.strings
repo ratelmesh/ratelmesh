@@ -88,6 +88,7 @@
 "RatelMesh could not switch to the selected exit device. Check the selection and try again." = "선택한 EXIT 기기로 전환할 수 없습니다. 선택을 확인하고 다시 시도하세요.";
 "The RatelMesh control core could not start. Try again." = "RatelMesh 제어 코어를 시작할 수 없습니다. 다시 시도하세요.";
 "Enrollment required" = "다시 등록해야 함";
+"Device enrollment" = "기기 등록";
 "Your enrollment expired or was revoked. Disconnect and enter a new one-use code." = "등록이 만료되었거나 취소되었습니다. 연결을 끊고 새 일회용 코드를 입력하세요.";
 "Re-enroll this device" = "이 기기 다시 등록";
 "Device traffic is unavailable until enrollment is renewed." = "등록을 갱신할 때까지 기기 트래픽을 사용할 수 없습니다.";

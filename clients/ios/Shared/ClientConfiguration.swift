@@ -5,7 +5,11 @@ struct ClientConfiguration: Codable, Equatable, Sendable {
     var authKey: String
     var hostname: String
 
-    init(coordinatorURL: String = "", authKey: String = "", hostname: String = "") {
+    init(
+        coordinatorURL: String = AppConstants.officialCoordinatorURL,
+        authKey: String = "",
+        hostname: String = ""
+    ) {
         self.coordinatorURL = coordinatorURL
         self.authKey = authKey
         self.hostname = hostname

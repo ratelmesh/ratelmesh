@@ -1,6 +1,7 @@
 import Foundation
 
 enum AppConstants {
+    static let officialCoordinatorURL = "https://control.ratelmesh.com"
     static let providerBundleIdentifier = "com.ratelmesh.ios.PacketTunnel"
     static let localizedDescription = "RatelMesh"
     static let configurationKey = "client-configuration-v1"

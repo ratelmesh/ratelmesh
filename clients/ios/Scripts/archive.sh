@@ -41,6 +41,10 @@ if [ "${RATELMESH_ARCHIVE_VALIDATE_ONLY:-0}" = "1" ]; then
 fi
 
 : "${RATELMESH_DEVELOPMENT_TEAM:?set RATELMESH_DEVELOPMENT_TEAM to the Apple team ID}"
+PROVISIONING_FLAG=
+if [ "${RATELMESH_ALLOW_PROVISIONING_UPDATES:-0}" = "1" ]; then
+    PROVISIONING_FLAG=-allowProvisioningUpdates
+fi
 
 cd "$ROOT"
 "$REPO/scripts/test-client-locales.py"
@@ -50,7 +54,7 @@ fi
 Scripts/prepare-wireguard.sh
 xcodegen generate
 
-xcodebuild -project RatelMesh.xcodeproj \
+xcodebuild $PROVISIONING_FLAG -project RatelMesh.xcodeproj \
     -scheme RatelMesh \
     -configuration Release \
     -destination 'generic/platform=iOS' \
@@ -95,20 +99,12 @@ if [ "$APP_GROUP:$KEYCHAIN_GROUP" != "$EXTENSION_APP_GROUP:$EXTENSION_KEYCHAIN_G
     exit 1
 fi
 
-ENTITLEMENTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ratelmesh-ios-entitlements.XXXXXX")
-trap 'rm -rf "$ENTITLEMENTS_DIR"' EXIT INT TERM
-codesign -d --entitlements - "$APP_BUNDLE" >"$ENTITLEMENTS_DIR/app.plist" 2>/dev/null
-codesign -d --entitlements - "$EXTENSION_BUNDLE" >"$ENTITLEMENTS_DIR/extension.plist" 2>/dev/null
-for key in com.apple.security.application-groups keychain-access-groups; do
-    plutil -extract "$key" json -o "$ENTITLEMENTS_DIR/app-$key.json" "$ENTITLEMENTS_DIR/app.plist"
-    plutil -extract "$key" json -o "$ENTITLEMENTS_DIR/extension-$key.json" "$ENTITLEMENTS_DIR/extension.plist"
-    if ! cmp -s "$ENTITLEMENTS_DIR/app-$key.json" "$ENTITLEMENTS_DIR/extension-$key.json"; then
-        echo "iOS app and extension signed entitlement '$key' differ" >&2
-        exit 1
-    fi
-done
-SIGNED_APP_GROUP=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups:0" "$ENTITLEMENTS_DIR/app.plist")
-SIGNED_KEYCHAIN_GROUP=$(/usr/libexec/PlistBuddy -c "Print :keychain-access-groups:0" "$ENTITLEMENTS_DIR/app.plist")
+Scripts/verify-archive.sh "$ARCHIVE_PATH"
+SIGNED_ENTITLEMENTS=$(mktemp "${TMPDIR:-/tmp}/ratelmesh-ios-entitlements.XXXXXX")
+trap 'rm -f "$SIGNED_ENTITLEMENTS"' EXIT INT TERM
+codesign -d --entitlements :- "$APP_BUNDLE" >"$SIGNED_ENTITLEMENTS" 2>/dev/null
+SIGNED_APP_GROUP=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups:0" "$SIGNED_ENTITLEMENTS")
+SIGNED_KEYCHAIN_GROUP=$(/usr/libexec/PlistBuddy -c "Print :keychain-access-groups:0" "$SIGNED_ENTITLEMENTS")
 if [ "$SIGNED_APP_GROUP:$SIGNED_KEYCHAIN_GROUP" != "$APP_GROUP:$KEYCHAIN_GROUP" ]; then
     echo "iOS signed entitlements do not match resolved Info.plist sharing groups" >&2
     exit 1
@@ -116,7 +112,7 @@ fi
 
 if [ -n "${RATELMESH_EXPORT_OPTIONS_PLIST:-}" ]; then
     test -f "$RATELMESH_EXPORT_OPTIONS_PLIST"
-    xcodebuild -exportArchive \
+    xcodebuild $PROVISIONING_FLAG -exportArchive \
         -archivePath "$ARCHIVE_PATH" \
         -exportPath "$EXPORT_PATH" \
         -exportOptionsPlist "$RATELMESH_EXPORT_OPTIONS_PLIST"

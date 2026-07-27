@@ -23,3 +23,13 @@ if ! grep -q '#include <sys/types.h>' "$DEST/Sources/WireGuardKitC/WireGuardKitC
     perl -i -0pe 's/#include "key\.h"/#include <sys\/types.h>\n#include "key.h"/' \
         "$DEST/Sources/WireGuardKitC/WireGuardKitC.h"
 fi
+
+# Endpoint/key refreshes must not replace iOS network settings. Reapplying the
+# same routes and DNS interrupts established sockets during routine netmap
+# updates. Keep this small upstream patch tracked in our repository so a clean
+# checkout produces the same WireGuardKit source as release builds.
+ADAPTER="$DEST/Sources/WireGuardKit/WireGuardAdapter.swift"
+if ! grep -q 'applyNetworkSettings: Bool = true' "$ADAPTER"; then
+    git -C "$DEST" apply --unidiff-zero \
+        "$ROOT/Patches/wireguard-apple-selective-network-settings.patch"
+fi

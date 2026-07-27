@@ -89,6 +89,7 @@
 "RatelMesh could not switch to the selected exit device. Check the selection and try again." = "RatelMesh n’a pas pu utiliser l’appareil EXIT sélectionné. Vérifiez la sélection puis réessayez.";
 "The RatelMesh control core could not start. Try again." = "Le cœur de contrôle RatelMesh n’a pas pu démarrer. Réessayez.";
 "Enrollment required" = "Nouvelle inscription requise";
+"Device enrollment" = "Inscription de l’appareil";
 "Your enrollment expired or was revoked. Disconnect and enter a new one-use code." = "Votre inscription a expiré ou a été révoquée. Déconnectez-vous et saisissez un nouveau code à usage unique.";
 "Re-enroll this device" = "Réinscrire cet appareil";
 "Device traffic is unavailable until enrollment is renewed." = "Le trafic de l’appareil reste indisponible tant que l’inscription n’est pas renouvelée.";

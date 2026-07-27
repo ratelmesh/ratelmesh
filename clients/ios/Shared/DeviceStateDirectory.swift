@@ -2,7 +2,7 @@ import Foundation
 
 enum DeviceStateDirectory {
     static func prepare(in container: URL) throws -> URL {
-        var state = container.appendingPathComponent("State", isDirectory: true)
+        let state = container.appendingPathComponent("State", isDirectory: true)
         try FileManager.default.createDirectory(
             at: state,
             withIntermediateDirectories: true

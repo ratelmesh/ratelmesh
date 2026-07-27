@@ -88,6 +88,7 @@
 "RatelMesh could not switch to the selected exit device. Check the selection and try again." = "O RatelMesh não conseguiu mudar para o dispositivo EXIT selecionado. Verifique a seleção e tente novamente.";
 "The RatelMesh control core could not start. Try again." = "Não foi possível iniciar o núcleo de controle do RatelMesh. Tente novamente.";
 "Enrollment required" = "Novo cadastro necessário";
+"Device enrollment" = "Cadastro do dispositivo";
 "Your enrollment expired or was revoked. Disconnect and enter a new one-use code." = "Seu cadastro expirou ou foi revogado. Desconecte e insira um novo código de uso único.";
 "Re-enroll this device" = "Cadastrar este dispositivo novamente";
 "Device traffic is unavailable until enrollment is renewed." = "O tráfego do dispositivo fica indisponível até a renovação do cadastro.";

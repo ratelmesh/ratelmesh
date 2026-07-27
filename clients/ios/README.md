@@ -39,11 +39,22 @@ WireGuardKit is cloned at the pinned official revision by
 `Scripts/prepare-wireguard.sh`. That upstream revision declares Swift tools 5.3
 while using platform constants added in 5.5, so the script fixes that manifest
 metadata line. It also adds the direct `sys/types.h` import required by Xcode
-26 explicit Clang modules. Both compatibility changes live only in the ignored
-local checkout. Its Swift package cannot
+26 explicit Clang modules. The script also applies the tracked
+`Patches/wireguard-apple-selective-network-settings.patch`, which lets endpoint-only
+updates avoid resetting stable iOS routes and DNS. Generated dependency files
+remain in the ignored local checkout, while every source change needed to reproduce
+them is tracked. Its Swift package cannot
 build `wireguard-go-bridge` automatically; the PacketTunnel
 target therefore runs `Scripts/build-wireguard-go.sh` as a pre-build phase, as
 required by WireGuardKit's integration guide.
+
+`RatelMeshMobile.xcframework` and WireGuardKit's Go backend must not be linked
+as two static Go archives in the Packet Tunnel executable. Their cgo runtime
+symbols collide on physical devices even though simulator builds pass.
+`RatelMeshControl.framework` is therefore a dynamic boundary: it owns the
+gomobile control core, while the extension executable owns WireGuardKit's Go
+backend. Keep the Packet Tunnel dependent on that framework rather than linking
+`RatelMeshMobile.xcframework` directly.
 
 For an unsigned device-SDK compile check:
 
@@ -90,9 +101,26 @@ Once the Apple team and provisioning profiles exist, create a signed archive:
 
 ```sh
 export RATELMESH_DEVELOPMENT_TEAM=ABCDE12345
-# Optional: also export an IPA using your App Store export options plist.
-export RATELMESH_EXPORT_OPTIONS_PLIST=/secure/path/ExportOptions.plist
-Scripts/archive.sh 0.2.39 239
+# Allow Xcode to create or refresh App Store distribution profiles when the
+# signed-in Apple account has permission.
+export RATELMESH_ALLOW_PROVISIONING_UPDATES=1
+# Optional: also export an App Store-signed IPA.
+export RATELMESH_EXPORT_OPTIONS_PLIST="$PWD/ExportOptions-AppStore.plist"
+Scripts/archive.sh 0.2.39 240
+# After creating the matching App Store Connect app record:
+Scripts/upload-app-store.sh build-release/RatelMesh.xcarchive
 # Equivalent repository-root shortcut:
-# make release-ios VERSION=0.2.39 BUILD=239
+# make release-ios VERSION=0.2.39 BUILD=240
 ```
+
+The shipped app declares `ITSAppUsesNonExemptEncryption=true` because its VPN
+data path includes WireGuard and hybrid post-quantum cryptography. Do not mark
+the build exempt merely to bypass App Store Connect's compliance workflow.
+Complete the applicable export declaration and regional documentation before
+review submission.
+
+The same iOS/iPadOS binary compiles and runs on Apple silicon Macs as an
+iPad-designed app. That is the initial Mac App Store delivery path: opt the iOS
+app into Mac availability in App Store Connect. The separately distributed
+menu-bar package is not submitted to the Mac App Store because its privileged
+daemon, PF integration, and installer are incompatible with App Sandbox.

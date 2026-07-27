@@ -88,6 +88,7 @@
 "RatelMesh could not switch to the selected exit device. Check the selection and try again." = "選択した EXIT デバイスに切り替えられませんでした。選択内容を確認して、もう一度お試しください。";
 "The RatelMesh control core could not start. Try again." = "RatelMesh の制御コアを起動できませんでした。もう一度お試しください。";
 "Enrollment required" = "再登録が必要です";
+"Device enrollment" = "デバイス登録";
 "Your enrollment expired or was revoked. Disconnect and enter a new one-use code." = "登録の有効期限が切れたか、取り消されました。接続を解除し、新しいワンタイムコードを入力してください。";
 "Re-enroll this device" = "このデバイスを再登録";
 "Device traffic is unavailable until enrollment is renewed." = "登録を更新するまで、このデバイスの通信は利用できません。";

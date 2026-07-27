@@ -7,6 +7,20 @@ import UIKit
 #endif
 
 final class MobileConfigurationTests: XCTestCase {
+    func testOfficialCoordinatorIsTheConfigurationDefault() throws {
+        let configuration = ClientConfiguration(authKey: "test", hostname: "iphone")
+        XCTAssertEqual(configuration.coordinatorURL, "https://control.ratelmesh.com")
+        XCTAssertEqual(try configuration.validated().coordinatorURL, "https://control.ratelmesh.com")
+    }
+
+    func testSystemLanguageResolutionUsesEnglishForEnglishAndUnknownLocales() {
+        XCTAssertEqual(ProductLanguage.systemLanguage(for: "en-US"), .english)
+        XCTAssertEqual(ProductLanguage.systemLanguage(for: "es-MX"), .spanish)
+        XCTAssertEqual(ProductLanguage.systemLanguage(for: "zh-Hans-CN"), .chinese)
+        XCTAssertEqual(ProductLanguage.systemLanguage(for: "zh-TW"), .traditionalChinese)
+        XCTAssertEqual(ProductLanguage.systemLanguage(for: "ar-SA"), .english)
+    }
+
     func testPrivacyManifestDeclaresLocallyCoarsenedLocationCollection() throws {
         let iosRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -89,6 +103,119 @@ final class MobileConfigurationTests: XCTestCase {
         XCTAssertTrue(status.exitTrafficVerified == true)
         XCTAssertEqual(status.exitClients?.first?.name, "phone")
         XCTAssertEqual(status.exitClients?.first?.state, "active")
+    }
+
+    func testPeerOnlyChangesDoNotReplaceIOSNetworkSettings() throws {
+        func configuration(endpoint: String, allowedIPs: [String]) -> MobileTunnelConfiguration {
+            MobileTunnelConfiguration(
+                version: 1,
+                active: true,
+                privateKey: "test-private-key",
+                listenPort: 51820,
+                addresses: ["100.64.0.7/32"],
+                dnsServers: ["1.1.1.1"],
+                peers: [
+                    MobilePeerConfiguration(
+                        publicKey: "test-public-key",
+                        endpoint: endpoint,
+                        allowedIPs: allowedIPs,
+                        persistentKeepalive: 5
+                    )
+                ],
+                directRoutes: ["203.0.113.1/32"],
+                blockRoutes: []
+            )
+        }
+
+        let first = configuration(endpoint: "192.0.2.1:51820", allowedIPs: ["0.0.0.0/0"])
+        let movedEndpoint = configuration(endpoint: "192.0.2.2:51820", allowedIPs: ["0.0.0.0/0"])
+        let changedRoutes = configuration(endpoint: "192.0.2.2:51820", allowedIPs: ["100.64.0.0/10"])
+        XCTAssertEqual(
+            try first.networkSettingsFingerprint(),
+            try movedEndpoint.networkSettingsFingerprint()
+        )
+        XCTAssertNotEqual(
+            try first.networkSettingsFingerprint(),
+            try changedRoutes.networkSettingsFingerprint()
+        )
+    }
+
+    func testConfigurationDropsRoutesForMissingInterfaceAddressFamily() throws {
+        let config = MobileTunnelConfiguration(
+            version: 1,
+            active: true,
+            privateKey: "test-private-key",
+            listenPort: 51820,
+            addresses: ["100.64.0.7/32"],
+            dnsServers: [],
+            peers: [
+                MobilePeerConfiguration(
+                    publicKey: "test-public-key",
+                    endpoint: "192.0.2.1:51820",
+                    allowedIPs: ["0.0.0.0/0", "::/0"],
+                    persistentKeepalive: 5
+                )
+            ],
+            directRoutes: [],
+            blockRoutes: []
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(config.effectivePeers().first).allowedIPs,
+            ["0.0.0.0/0"]
+        )
+        XCTAssertEqual(try config.effectiveDNSServers(), ["1.1.1.1"])
+    }
+
+    func testDirectPreservesSystemDNSAndExplicitExitDNSWins() throws {
+        func configuration(dnsServers: [String], allowedIPs: [String]) -> MobileTunnelConfiguration {
+            MobileTunnelConfiguration(
+                version: 1,
+                active: true,
+                privateKey: "test-private-key",
+                listenPort: 51820,
+                addresses: ["100.64.0.7/32"],
+                dnsServers: dnsServers,
+                peers: [
+                    MobilePeerConfiguration(
+                        publicKey: "test-public-key",
+                        endpoint: "192.0.2.1:51820",
+                        allowedIPs: allowedIPs,
+                        persistentKeepalive: 5
+                    )
+                ],
+                directRoutes: [],
+                blockRoutes: []
+            )
+        }
+
+        XCTAssertEqual(
+            try configuration(dnsServers: [], allowedIPs: ["100.64.0.0/10"])
+                .effectiveDNSServers(),
+            []
+        )
+        XCTAssertEqual(
+            try configuration(dnsServers: ["9.9.9.9"], allowedIPs: ["0.0.0.0/0"])
+                .effectiveDNSServers(),
+            ["9.9.9.9"]
+        )
+    }
+
+    func testExitSelectionPreservesPhysicalEndpointBypassRoutes() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controller = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/TunnelController.swift"),
+            encoding: .utf8
+        )
+        let model = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/AppViewModel.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(controller.contains("includeAllNetworks"))
+        XCTAssertFalse(model.contains("includeAllNetworks"))
+        XCTAssertTrue(controller.contains("sendProviderMessage"))
+        XCTAssertTrue(model.contains("try await tunnel.installIfNeeded()"))
     }
 
     func testDecodesEnrollmentRequiredAndExposesSafeRecovery() throws {
@@ -271,6 +398,21 @@ final class MobileConfigurationTests: XCTestCase {
         XCTAssertThrowsError(try config.wgQuickConfiguration())
     }
 
+    func testNativeApplyWaitsForARealNetmapInterface() {
+        let placeholder = MobileTunnelConfiguration(
+            version: 1, active: true, privateKey: "private=", listenPort: 0,
+            addresses: [], dnsServers: [], peers: [], directRoutes: [], blockRoutes: []
+        )
+        XCTAssertFalse(placeholder.isReadyForNativeApply)
+
+        let ready = MobileTunnelConfiguration(
+            version: 2, active: true, privateKey: "private=", listenPort: 51820,
+            addresses: ["100.64.0.7/32"], dnsServers: [], peers: [],
+            directRoutes: [], blockRoutes: []
+        )
+        XCTAssertTrue(ready.isReadyForNativeApply)
+    }
+
     func testRejectsWgQuickLineInjection() {
         let config = MobileTunnelConfiguration(
             version: 1, active: true, privateKey: "private=", listenPort: 0,
@@ -450,25 +592,74 @@ final class MobileConfigurationTests: XCTestCase {
         XCTAssertTrue(source.contains("recordProviderError(ProviderError.forcedTeardown)"))
     }
 
-    func testMobileCoreErrorsCollapseToStableTaxonomyAtWrapperBoundary() throws {
+    func testGoControlCoreIsIsolatedFromWireGuardGoRuntime() throws {
         let iosRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let source = try String(
-            contentsOf: iosRoot.appendingPathComponent("PacketTunnel/RatelMeshMobileClient.swift"),
+        let project = try String(
+            contentsOf: iosRoot.appendingPathComponent("project.yml"),
             encoding: .utf8
         )
-        XCTAssertTrue(source.contains("throw RatelMeshMobileError.creationFailed"))
-        XCTAssertTrue(source.contains("throw RatelMeshMobileError.exitSelectionFailed"))
-        XCTAssertTrue(source.contains("throw RatelMeshMobileError.doctorUnavailable"))
-        XCTAssertTrue(source.contains("case .creationFailed: .controlCoreStartFailed"))
-        XCTAssertTrue(source.contains("case .exitSelectionFailed: .exitSelectionFailed"))
-        XCTAssertTrue(source.contains("case .doctorUnavailable: .unknownProviderError"))
+        XCTAssertTrue(project.contains("RatelMeshControl:"))
+        XCTAssertTrue(project.contains("- target: RatelMeshControl"))
+        let source = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMeshControl/RatelMeshMobileClient.swift"),
+            encoding: .utf8
+        )
         XCTAssertTrue(source.contains("app.doctorDisclosureVersion()"))
         XCTAssertTrue(source.contains("app.runNetworkDoctor"))
         XCTAssertTrue(source.contains("app.applyNetworkDoctorRepair"))
-        XCTAssertFalse(source.contains("errorDescription"))
-        XCTAssertFalse(source.contains("LocalizedError"))
+        let provider = try String(
+            contentsOf: iosRoot.appendingPathComponent("PacketTunnel/PacketTunnelProvider.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(provider.contains("import RatelMeshControl"))
+        XCTAssertTrue(provider.contains("throw ProviderError.controlCoreStartFailed"))
+        XCTAssertTrue(provider.contains("throw ProviderError.exitSelectionFailed"))
+        XCTAssertTrue(provider.contains("applyNetworkSettings: routesChanged"))
+        XCTAssertTrue(provider.contains("networkSettingsFingerprint"))
+        let preparation = try String(
+            contentsOf: iosRoot.appendingPathComponent("Scripts/prepare-wireguard.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(preparation.contains("wireguard-apple-selective-network-settings.patch"))
+        let adapterPatch = try String(
+            contentsOf: iosRoot.appendingPathComponent(
+                "Patches/wireguard-apple-selective-network-settings.patch"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(adapterPatch.contains("applyNetworkSettings: Bool = true"))
+        XCTAssertTrue(adapterPatch.contains("if applyNetworkSettings"))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: iosRoot.appendingPathComponent("PacketTunnel/RatelMeshMobileClient.swift").path
+        ))
+    }
+
+    func testDeviceConnectHookCannotShipInReleaseBuilds() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let app = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/RatelMeshApp.swift"),
+            encoding: .utf8
+        )
+        let connect = try XCTUnwrap(app.range(of: "await model.connect()"))
+        let debugStart = try XCTUnwrap(
+            app.range(of: "#if DEBUG", options: .backwards, range: app.startIndex..<connect.lowerBound)
+        )
+        let debugEnd = try XCTUnwrap(
+            app.range(of: "#endif", range: connect.upperBound..<app.endIndex)
+        )
+        let debugBlock = app[debugStart.lowerBound..<debugEnd.upperBound]
+        XCTAssertTrue(debugBlock.contains("await model.connect()"))
+        XCTAssertTrue(app.contains("RATELMESH_DEVICE_TEST_CONNECT"))
+        XCTAssertTrue(app.contains("--ratelmesh-device-test-connect"))
+        XCTAssertTrue(app.contains("--ratelmesh-device-test-disconnect"))
+        XCTAssertTrue(app.contains("--ratelmesh-device-test-exit="))
+        XCTAssertTrue(app.contains("--ratelmesh-device-test-direct"))
+        XCTAssertTrue(app.contains("--ratelmesh-device-test-network"))
+        XCTAssertTrue(debugBlock.contains("runDeviceNetworkTests"))
     }
 
     func testLowLevelErrorsDoNotCarryUserVisibleHardcodedCopy() throws {

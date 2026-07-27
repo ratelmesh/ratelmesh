@@ -1,6 +1,7 @@
 import Foundation
 import NetworkExtension
 import OSLog
+import RatelMeshControl
 import WireGuardKit
 
 private final class SendableCallback<Value>: @unchecked Sendable {
@@ -13,6 +14,10 @@ private final class SendableCallback<Value>: @unchecked Sendable {
     func call(_ value: Value) {
         callback(value)
     }
+}
+
+private struct ControlReadinessSnapshot: Decodable {
+    let netmapVersion: UInt64?
 }
 
 final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
@@ -45,6 +50,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private var lifecycle = TunnelLifecycleGeneration()
     private var adapterOperation: (kind: AdapterOperation, generation: UInt64)?
     private var adapterStopInFlight = false
+    private var appliedNetworkSettingsFingerprint: String?
+    private var pendingNetworkSettingsFingerprint: String?
     private var sharedDefaults: UserDefaults?
     private var sharedContainerURL: URL?
 
@@ -66,6 +73,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 self.lifecycle.begin()
                 self.statsReadGate.invalidate()
                 self.applyGate.reset()
+                self.appliedNetworkSettingsFingerprint = nil
+                self.pendingNetworkSettingsFingerprint = nil
                 self.sharedDefaults = nil
                 self.sharedContainerURL = nil
                 guard let defaults = AppConstants.sharedDefaults,
@@ -84,7 +93,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 let configuration = try SecureConfigurationStore().load()?.validated()
                 guard let configuration else { throw ProviderError.missingConfiguration }
                 let state = try DeviceStateDirectory.prepare(in: container)
-                let core = try RatelMeshMobileClient(configuration: configuration, stateDirectory: state)
+                let core: RatelMeshMobileClient
+                do {
+                    core = try RatelMeshMobileClient(
+                        coordinatorURL: configuration.coordinatorURL,
+                        authKey: configuration.authKey,
+                        stateDirectory: state,
+                        hostname: configuration.hostname
+                    )
+                } catch {
+                    throw ProviderError.controlCoreStartFailed
+                }
                 self.core = core
                 self.startCompletion = completion
                 core.start()
@@ -101,6 +120,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         let completion = SendableCallback<Void> { completionHandler() }
         queue.async {
+            self.recordDeviceTestStage("stop-reason-\(reason.rawValue)")
             if self.lifecycle.isClosing {
                 if self.lifecycle.isTerminal {
                     if self.forcedTeardownWatchdog != nil {
@@ -153,11 +173,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                     return
                 case "useExit":
                     guard let name = object["name"] as? String, !name.isEmpty else { throw ProviderError.invalidExit }
-                    try core.useExit(name)
+                    self.recordExitTestStage("ipc-use-exit-start")
+                    do { try core.useExit(name) }
+                    catch {
+                        self.recordExitTestStage("ipc-use-exit-failed")
+                        throw ProviderError.exitSelectionFailed
+                    }
                     self.lastRequestedExit = name
+                    self.recordExitTestStage("ipc-use-exit-succeeded")
                 case "clearExit":
-                    try core.useExit("")
+                    self.recordExitTestStage("ipc-clear-exit-start")
+                    do { try core.useExit("") }
+                    catch {
+                        self.recordExitTestStage("ipc-clear-exit-failed")
+                        throw ProviderError.exitSelectionFailed
+                    }
                     self.lastRequestedExit = ""
+                    self.recordExitTestStage("ipc-clear-exit-succeeded")
                 case "networkDoctorDiagnose":
                     guard object["confirmed"] as? String == "true",
                           let disclosure = object["disclosureVersion"] as? String,
@@ -211,30 +243,62 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     private func pollOnce() {
         guard let core else { return }
-        persistStatus(core.statusJSON)
+        let statusJSON = core.statusJSON
+        persistStatus(statusJSON)
         reportRuntimeStats(core)
-        applyDesiredExitIfNeeded(core)
+        let status = try? JSONDecoder().decode(
+            ControlReadinessSnapshot.self,
+            from: Data(statusJSON.utf8)
+        )
+        if (status?.netmapVersion ?? 0) > 0 {
+            applyDesiredExitIfNeeded(core)
+        }
         let version = core.tunnelConfigurationVersion
         guard applyGate.begin(version: version) else { return }
         do {
             let data = Data(core.tunnelConfigurationJSON.utf8)
             let mobile = try JSONDecoder().decode(MobileTunnelConfiguration.self, from: data)
+            let defaultRoutes = mobile.peers.reduce(into: 0) { count, peer in
+                count += peer.allowedIPs.filter { $0 == "0.0.0.0/0" || $0 == "::/0" }.count
+            }
+            recordConfigurationTestSummary(mobile)
+            recordDeviceTestStage(
+                "snapshot-v\(mobile.version)-active-\(mobile.active)-addresses-\(mobile.addresses.count)-peers-\(mobile.peers.count)-defaults-\(defaultRoutes)"
+            )
             guard mobile.version == version else { throw ProviderError.configurationVersionMismatch }
             guard mobile.active else {
                 deactivateAdapter(version: version)
                 return
             }
+            guard mobile.isReadyForNativeApply else {
+                applyGate.finish(version: version, succeeded: false)
+                return
+            }
             let configuration = try mobile.wireGuardConfiguration()
+            let networkSettingsFingerprint = try mobile.networkSettingsFingerprint()
             if adapterStarted {
                 let generation = lifecycle.value
                 adapterOperation = (.update, generation)
-                adapter.update(tunnelConfiguration: configuration) { [weak self] error in
+                pendingNetworkSettingsFingerprint = networkSettingsFingerprint
+                let routesChanged = networkSettingsFingerprint != appliedNetworkSettingsFingerprint
+                recordNetworkApplyTestStage(
+                    "\(routesChanged ? "routes" : "peers")-v\(version)"
+                )
+                recordDeviceTestStage(
+                    "adapter-update-\(routesChanged ? "routes" : "peers")-v\(version)"
+                )
+                adapter.update(
+                    tunnelConfiguration: configuration,
+                    applyNetworkSettings: routesChanged
+                ) { [weak self] error in
                     guard let self else { return }
                     self.queue.async { self.finishApply(version: version, generation: generation, error: error) }
                 }
             } else {
                 let generation = lifecycle.value
                 adapterOperation = (.start, generation)
+                pendingNetworkSettingsFingerprint = networkSettingsFingerprint
+                recordDeviceTestStage("adapter-start-v\(version)")
                 adapter.start(tunnelConfiguration: configuration) { [weak self] error in
                     guard let self else { return }
                     self.queue.async { self.finishInitialStart(version: version, generation: generation, error: error) }
@@ -264,7 +328,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                       self.adapterStarted,
                       self.adapterOperation?.kind != .deactivate,
                       let runtime else { return }
-                core.updatePeerStats(WireGuardRuntimeStats.decode(runtime))
+                let decoded = WireGuardRuntimeStats.decode(runtime)
+                self.recordRuntimeTestSummary(decoded)
+                guard let data = try? JSONEncoder().encode(decoded),
+                      let json = String(data: data, encoding: .utf8) else { return }
+                try? core.updatePeerStatsJSON(json)
             }
         }
     }
@@ -275,10 +343,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return
         }
         if let error {
+            pendingNetworkSettingsFingerprint = nil
+            recordDeviceTestStage("adapter-start-failed-v\(version)")
             applyGate.finish(version: version, succeeded: false)
             failInitialStart(error)
             return
         }
+        recordDeviceTestStage("adapter-started-v\(version)")
+        appliedNetworkSettingsFingerprint = pendingNetworkSettingsFingerprint
+        pendingNetworkSettingsFingerprint = nil
         adapterStarted = true
         applyGate.finish(version: version, succeeded: true)
         initialTimeout?.cancel()
@@ -293,11 +366,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return
         }
         if let error {
+            pendingNetworkSettingsFingerprint = nil
+            recordDeviceTestStage("adapter-update-failed-v\(version)")
             applyGate.finish(version: version, succeeded: false)
             recordProviderError(error)
             logger.error("WireGuard update failed: \(error.localizedDescription, privacy: .private)")
             return
         }
+        recordDeviceTestStage("adapter-updated-v\(version)")
+        appliedNetworkSettingsFingerprint = pendingNetworkSettingsFingerprint
+        pendingNetworkSettingsFingerprint = nil
         applyGate.finish(version: version, succeeded: true)
     }
 
@@ -323,6 +401,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                     return
                 }
                 self.adapterStarted = false
+                self.appliedNetworkSettingsFingerprint = nil
+                self.pendingNetworkSettingsFingerprint = nil
                 self.applyGate.finish(version: version, succeeded: true)
             }
         }
@@ -333,10 +413,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let desired = sharedDefaults.string(forKey: AppConstants.selectedExitKey) ?? ""
         guard desired != lastRequestedExit else { return }
         do {
+            recordExitTestStage(desired.isEmpty ? "poll-clear-exit-start" : "poll-use-exit-start")
             try core.useExit(desired)
             lastRequestedExit = desired
+            recordExitTestStage(desired.isEmpty ? "poll-clear-exit-succeeded" : "poll-use-exit-succeeded")
         } catch {
             // Netmap may not contain the exit yet. Retry on the next poll.
+            recordExitTestStage(desired.isEmpty ? "poll-clear-exit-failed" : "poll-use-exit-failed")
             logger.debug("Deferred exit selection: \(error.localizedDescription, privacy: .private)")
         }
     }
@@ -351,6 +434,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     private func failInitialStart(_ error: Error) {
         guard let completion = startCompletion else { return }
+        recordDeviceTestStage("initial-start-failed")
         stopTimers()
         invalidateLifecycle()
         core?.stop()
@@ -368,6 +452,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         lifecycle.invalidate()
         statsReadGate.invalidate()
         applyGate.reset()
+        pendingNetworkSettingsFingerprint = nil
     }
 
     private func finishAdapterOperation(_ kind: AdapterOperation, generation: UInt64) -> Bool {
@@ -512,6 +597,47 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         sharedDefaults?.set(json, forKey: AppConstants.lastStatusKey)
     }
 
+    private func recordDeviceTestStage(_ stage: String) {
+#if DEBUG
+        sharedDefaults?.set(stage, forKey: "device-test-provider-stage")
+#endif
+    }
+
+    private func recordExitTestStage(_ stage: String) {
+#if DEBUG
+        sharedDefaults?.set(stage, forKey: "device-test-exit-stage")
+#endif
+    }
+
+    private func recordNetworkApplyTestStage(_ stage: String) {
+#if DEBUG
+        sharedDefaults?.set(stage, forKey: "device-test-network-apply")
+#endif
+    }
+
+    private func recordConfigurationTestSummary(_ configuration: MobileTunnelConfiguration) {
+#if DEBUG
+        let effective = (try? configuration.effectivePeers()) ?? []
+        let routes = effective.flatMap(\.allowedIPs)
+        let defaults = routes.filter { $0 == "0.0.0.0/0" || $0 == "::/0" }.count
+        sharedDefaults?.set(
+            "effective-peers-\(effective.count)-routes-\(routes.count)-defaults-\(defaults)-direct-\(configuration.directRoutes.count)-block-\(configuration.blockRoutes.count)-dns-\(configuration.dnsServers.count)",
+            forKey: "device-test-config-summary"
+        )
+#endif
+    }
+
+    private func recordRuntimeTestSummary(_ stats: [WireGuardPeerStat]) {
+#if DEBUG
+        let handshakes = stats.filter { $0.latestHandshakeUnix > 0 }.count
+        let receiving = stats.filter { $0.rxBytes > 0 }.count
+        sharedDefaults?.set(
+            "peers-\(stats.count)-handshakes-\(handshakes)-receiving-\(receiving)",
+            forKey: "device-test-runtime-summary"
+        )
+#endif
+    }
+
     private func recordProviderError(_ error: Error) {
         guard let sharedDefaults, let sharedContainerURL else { return }
         do {
@@ -554,6 +680,8 @@ enum ProviderError: Error, TunnelErrorCodeProviding {
     case alreadyActive
     case forcedTeardown
     case enrollmentResetPending
+    case controlCoreStartFailed
+    case exitSelectionFailed
 
     var tunnelErrorCode: TunnelErrorCode {
         switch self {
@@ -568,6 +696,8 @@ enum ProviderError: Error, TunnelErrorCodeProviding {
         case .closing, .alreadyActive: .tunnelAlreadyActive
         case .forcedTeardown: .tunnelForcedTeardown
         case .enrollmentResetPending: .configurationMissing
+        case .controlCoreStartFailed: .controlCoreStartFailed
+        case .exitSelectionFailed: .exitSelectionFailed
         }
     }
 }

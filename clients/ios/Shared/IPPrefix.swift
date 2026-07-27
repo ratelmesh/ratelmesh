@@ -47,6 +47,9 @@ struct IPPrefix: Equatable, Hashable, CustomStringConvertible, Sendable {
         return "\(String(decoding: output[..<end].map(UInt8.init(bitPattern:)), as: UTF8.self))/\(length)"
     }
 
+    var isIPv4: Bool { family == AF_INET }
+    var isIPv6: Bool { family == AF_INET6 }
+
     func subtracting(_ exclusions: [IPPrefix]) -> [IPPrefix] {
         exclusions.reduce([self]) { current, exclusion in
             current.flatMap { $0.subtracting(exclusion) }

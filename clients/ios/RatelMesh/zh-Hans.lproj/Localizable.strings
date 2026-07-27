@@ -88,6 +88,7 @@
 "RatelMesh could not switch to the selected exit device. Check the selection and try again." = "RatelMesh 无法切换到所选出口设备，请检查选择后重试。";
 "The RatelMesh control core could not start. Try again." = "RatelMesh 控制核心无法启动，请重试。";
 "Enrollment required" = "需要重新入网";
+"Device enrollment" = "设备入网";
 "Your enrollment expired or was revoked. Disconnect and enter a new one-use code." = "入网授权已过期或被撤销。请断开连接，然后输入新的一次性入网码。";
 "Re-enroll this device" = "重新入网此设备";
 "Device traffic is unavailable until enrollment is renewed." = "重新入网前，设备流量无法使用 RatelMesh。";

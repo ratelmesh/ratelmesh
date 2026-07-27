@@ -149,7 +149,7 @@ if missing_ios:
     fail(f"iOS catalogs miss UI keys: {sorted(missing_ios)}")
 
 android_language = (ROOT / "clients/android/app/src/main/java/com/ratelmesh/android/AppLanguage.kt").read_text()
-ios_language = (ROOT / "clients/ios/RatelMesh/RatelMeshApp.swift").read_text()
+ios_language = (ROOT / "clients/ios/Shared/ProductLanguage.swift").read_text()
 mac_language = mac_source
 android_selector = set(re.findall(r'^[ \t]*[A-Z_]+\("([^"]+)"\)', android_language, re.MULTILINE))
 if android_selector != set(LOCALES) | {"system"}:

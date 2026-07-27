@@ -1,0 +1,33 @@
+diff --git a/Sources/WireGuardKit/WireGuardAdapter.swift b/Sources/WireGuardKit/WireGuardAdapter.swift
+index f7be19b..61baccc 100644
+--- a/Sources/WireGuardKit/WireGuardAdapter.swift
++++ b/Sources/WireGuardKit/WireGuardAdapter.swift
+@@ -241 +241,5 @@ public class WireGuardAdapter {
+-    public func update(tunnelConfiguration: TunnelConfiguration, completionHandler: @escaping (WireGuardAdapterError?) -> Void) {
++    public func update(
++        tunnelConfiguration: TunnelConfiguration,
++        applyNetworkSettings: Bool = true,
++        completionHandler: @escaping (WireGuardAdapterError?) -> Void
++    ) {
+@@ -248,4 +252,7 @@ public class WireGuardAdapter {
+-            // Tell the system that the tunnel is going to reconnect using new WireGuard
+-            // configuration.
+-            // This will broadcast the `NEVPNStatusDidChange` notification to the GUI process.
+-            self.packetTunnelProvider?.reasserting = true
++            // Updating only peer endpoints/keys does not require replacing the
++            // system routes. Reasserting and setTunnelNetworkSettings interrupt
++            // active sockets on iOS, so reserve them for actual route/DNS/address
++            // changes.
++            if applyNetworkSettings {
++                self.packetTunnelProvider?.reasserting = true
++            }
+@@ -253 +260,3 @@ public class WireGuardAdapter {
+-                self.packetTunnelProvider?.reasserting = false
++                if applyNetworkSettings {
++                    self.packetTunnelProvider?.reasserting = false
++                }
+@@ -258 +267,3 @@ public class WireGuardAdapter {
+-                try self.setNetworkSettings(settingsGenerator.generateNetworkSettings())
++                if applyNetworkSettings {
++                    try self.setNetworkSettings(settingsGenerator.generateNetworkSettings())
++                }

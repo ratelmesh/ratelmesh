@@ -12,10 +12,48 @@ struct MobileTunnelConfiguration: Codable, Equatable, Sendable {
     let blockRoutes: [String]
     var killSwitch: Bool? = nil
 
+    var isReadyForNativeApply: Bool {
+        version > 0 && active && !privateKey.isEmpty && !addresses.isEmpty
+    }
+
+    func networkSettingsFingerprint() throws -> String {
+        let routes = try effectivePeers().flatMap(\.allowedIPs).sorted()
+        let blocked = try normalizedBlockRoutes().sorted()
+        return [
+            addresses.sorted().joined(separator: ","),
+            try effectiveDNSServers().sorted().joined(separator: ","),
+            routes.joined(separator: ","),
+            blocked.joined(separator: ","),
+        ].joined(separator: "\u{0}")
+    }
+
+    func effectiveDNSServers() throws -> [String] {
+        if !dnsServers.isEmpty {
+            return dnsServers
+        }
+        let ownsIPv4DefaultRoute = try effectivePeers().contains { peer in
+            peer.allowedIPs.contains("0.0.0.0/0")
+        }
+        // With an iOS full-tunnel route, leaving NEDNSSettings unset can keep
+        // the resolver scoped to the physical interface while its packets are
+        // routed through the tunnel. Network.framework then reports -1009 even
+        // though WireGuard is handshaking. Preserve system DNS for DIRECT and
+        // provide a reachable tunnel DNS only for EXIT.
+        return ownsIPv4DefaultRoute ? ["1.1.1.1"] : []
+    }
+
     func effectivePeers() throws -> [MobileEffectivePeer] {
         let exclusions = try (directRoutes + blockRoutes).map(IPPrefix.init)
+        let interfacePrefixes = try addresses.map(IPPrefix.init)
+        let hasIPv4Interface = interfacePrefixes.contains { $0.isIPv4 }
+        let hasIPv6Interface = interfacePrefixes.contains { $0.isIPv6 }
         return try peers.compactMap { peer in
-            let allowed = try peer.allowedIPs.flatMap { try IPPrefix($0).subtracting(exclusions) }.map(\.description)
+            let allowed = try peer.allowedIPs
+                .flatMap { try IPPrefix($0).subtracting(exclusions) }
+                .filter {
+                    ($0.isIPv4 && hasIPv4Interface) || ($0.isIPv6 && hasIPv6Interface)
+                }
+                .map(\.description)
             return allowed.isEmpty ? nil : MobileEffectivePeer(peer: peer, allowedIPs: allowed)
         }
     }
@@ -29,7 +67,7 @@ struct MobileTunnelConfiguration: Codable, Equatable, Sendable {
         guard !privateKey.isEmpty, !addresses.isEmpty else { throw MobileConfigurationError.missingInterface }
         var scalarFields = [privateKey]
         scalarFields.append(contentsOf: addresses)
-        scalarFields.append(contentsOf: dnsServers)
+        scalarFields.append(contentsOf: try effectiveDNSServers())
         scalarFields.append(contentsOf: directRoutes)
         scalarFields.append(contentsOf: blockRoutes)
         for peer in peers {
@@ -44,7 +82,8 @@ struct MobileTunnelConfiguration: Codable, Equatable, Sendable {
         let blocked = try normalizedBlockRoutes()
         var lines = ["[Interface]", "PrivateKey = \(privateKey)", "Address = \(addresses.joined(separator: ", "))"]
         if listenPort > 0 { lines.append("ListenPort = \(listenPort)") }
-        if !dnsServers.isEmpty { lines.append("DNS = \(dnsServers.joined(separator: ", "))") }
+        let effectiveDNS = try effectiveDNSServers()
+        if !effectiveDNS.isEmpty { lines.append("DNS = \(effectiveDNS.joined(separator: ", "))") }
 
         for effective in try effectivePeers() {
             let peer = effective.peer

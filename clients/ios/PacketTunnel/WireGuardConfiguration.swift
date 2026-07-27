@@ -4,6 +4,9 @@ import WireGuardKit
 extension MobileTunnelConfiguration {
     func wireGuardConfiguration() throws -> TunnelConfiguration {
         guard active else { throw MobileConfigurationError.inactive }
+        guard !privateKey.isEmpty, !addresses.isEmpty else {
+            throw MobileConfigurationError.missingInterface
+        }
         guard let privateKey = PrivateKey(base64Key: privateKey) else {
             throw MobileConfigurationError.invalidField("privateKey")
         }
@@ -16,7 +19,7 @@ extension MobileTunnelConfiguration {
             guard let value = UInt16(exactly: listenPort) else { throw MobileConfigurationError.invalidField("listenPort") }
             interface.listenPort = value
         }
-        interface.dns = try dnsServers.map {
+        interface.dns = try effectiveDNSServers().map {
             guard let value = DNSServer(from: $0) else { throw MobileConfigurationError.invalidField("dnsServers: \($0)") }
             return value
         }

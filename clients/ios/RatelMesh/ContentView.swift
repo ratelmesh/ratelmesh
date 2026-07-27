@@ -319,11 +319,7 @@ struct ContentView: View {
     private var settings: some View {
         NavigationStack {
             Form {
-                Section(t("控制面", "Control plane")) {
-                    TextField("https://coord.example.com", text: $model.coordinatorURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
+                Section(t("设备入网", "Device enrollment")) {
                     SecureField(t("一次性入网码", "One-use enrollment code"), text: $model.authKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -356,7 +352,7 @@ struct ContentView: View {
                 }
             }
         }
-        .interactiveDismissDisabled(model.coordinatorURL.isEmpty)
+        .interactiveDismissDisabled(model.authKey.isEmpty)
     }
 
     private var statusTitle: String {

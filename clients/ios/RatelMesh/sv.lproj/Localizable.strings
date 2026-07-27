@@ -88,6 +88,7 @@
 "RatelMesh could not switch to the selected exit device. Check the selection and try again." = "RatelMesh kunde inte växla till den valda EXIT-enheten. Kontrollera valet och försök igen.";
 "The RatelMesh control core could not start. Try again." = "RatelMesh styrkärna kunde inte starta. Försök igen.";
 "Enrollment required" = "Ny registrering krävs";
+"Device enrollment" = "Enhetsregistrering";
 "Your enrollment expired or was revoked. Disconnect and enter a new one-use code." = "Din registrering har gått ut eller återkallats. Koppla från och ange en ny engångskod.";
 "Re-enroll this device" = "Registrera enheten igen";
 "Device traffic is unavailable until enrollment is renewed." = "Enhetens trafik är inte tillgänglig förrän registreringen har förnyats.";
