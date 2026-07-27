@@ -31,29 +31,24 @@ func pqSessionFor(nm types.Netmap, peerID string) (types.PQSession, bool) {
 	return found, matched
 }
 
-// ensurePQSessions creates the canonical smaller-ID -> larger-ID encapsulation
-// for every visible PQ-capable peer. Shared secrets are encrypted at rest before
-// the ciphertext is published, so a crash cannot strand the initiator.
+// ensurePQSessions keeps one usable encapsulation for every visible PQ-capable
+// peer. Either endpoint may repair a missing or locally unusable session, so an
+// older peer that does not initiate cannot strand the pair. Shared secrets are
+// encrypted at rest before the ciphertext is published.
 func (d *Daemon) ensurePQSessions(ctx context.Context, nm types.Netmap) error {
 	if !d.cfg.RequirePQC {
 		return nil
 	}
 	for _, peer := range nm.Peers {
-		if nm.Self.ID >= peer.ID {
-			continue
-		}
 		if len(peer.PQKEMPublicKey) != pqcrypto.KEMPublicKeySize || len(nm.Self.PQSigningPublicKey) != pqcrypto.MLDSAPublicKeySize {
 			if d.cfg.RequirePQC {
 				d.log.Warn("peer does not advertise required post-quantum keys", "peer", peer.Name)
 			}
 			continue
 		}
-		if current, ok := pqSessionFor(nm, peer.ID); ok {
-			d.mu.Lock()
-			record, saved := d.pqSecrets[peer.ID]
-			d.mu.Unlock()
-			if current.Epoch > 0 && saved && record.Epoch == current.Epoch &&
-				record.CiphertextHash == pqCiphertextHash(current.Ciphertext) {
+		current, hasCurrent := pqSessionFor(nm, peer.ID)
+		if hasCurrent {
+			if _, ready := d.pqPresharedKey(nm, peer); ready {
 				continue
 			}
 		}
@@ -61,11 +56,19 @@ func (d *Daemon) ensurePQSessions(ctx context.Context, nm types.Netmap) error {
 		previous := d.pqSecrets[peer.ID]
 		d.mu.Unlock()
 		epoch := nm.Version
-		if epoch <= previous.Epoch {
-			if previous.Epoch == ^uint64(0) {
+		for _, floor := range []uint64{previous.Epoch, current.Epoch} {
+			if epoch <= floor {
+				if floor == ^uint64(0) {
+					return fmt.Errorf("PQ session epoch exhausted for %s", peer.Name)
+				}
+				epoch = floor + 1
+			}
+		}
+		if epoch == 0 {
+			if nm.Version == ^uint64(0) {
 				return fmt.Errorf("PQ session epoch exhausted for %s", peer.Name)
 			}
-			epoch = previous.Epoch + 1
+			epoch = 1
 		}
 		shared, ciphertext, err := pqcrypto.Encapsulate(peer.PQKEMPublicKey)
 		if err != nil {
@@ -107,7 +110,7 @@ func (d *Daemon) pqPresharedKey(nm types.Netmap, peer types.Node) (types.Key, bo
 	if !ok {
 		return types.Key{}, !d.cfg.RequirePQC
 	}
-	if session.InitiatorID >= session.RecipientID || session.Epoch == 0 ||
+	if session.InitiatorID == session.RecipientID || session.Epoch == 0 ||
 		len(session.Ciphertext) != pqcrypto.KEMCiphertextSize {
 		return types.Key{}, false
 	}

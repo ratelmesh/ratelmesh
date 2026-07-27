@@ -119,8 +119,8 @@ type Netmap struct {
 	RemoteAccessGrants      []remoteaccess.SignedGrant     `json:"remoteAccessGrants,omitempty"`
 }
 
-// PQSession is an ML-KEM-768 encapsulation from the lexicographically smaller
-// node ID to the larger node ID. Signature is ML-DSA-65 over both IDs and the
+// PQSession is an ML-KEM-768 encapsulation between two nodes. Either endpoint
+// may initiate recovery. Signature is ML-DSA-65 over both IDs, the epoch and
 // ciphertext, preventing coordinator substitution and cross-pair replay.
 type PQSession struct {
 	InitiatorID string `json:"initiatorID"`

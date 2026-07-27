@@ -2,10 +2,13 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -19,6 +22,95 @@ import (
 	"github.com/ratelmesh/ratelmesh/internal/types"
 	"github.com/ratelmesh/ratelmesh/internal/wgengine"
 )
+
+func TestLargerEndpointRepairsMissingPQSession(t *testing.T) {
+	var published types.PQSessionRequest
+	publishCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/pqsession" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&published); err != nil {
+			t.Errorf("decode publication: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		publishCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	initiator, err := New(Config{
+		CoordURL: server.URL, StateDir: t.TempDir(), Hostname: "initiator",
+		Engine: wgengine.NewStub(nil), RequirePQC: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := New(Config{
+		CoordURL: server.URL, StateDir: t.TempDir(), Hostname: "recipient",
+		Engine: wgengine.NewStub(nil), RequirePQC: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := types.Node{
+		ID: "node-z", Name: "initiator", Key: initiator.priv.Public(),
+		PQKEMPublicKey:     initiator.pqKeys.KEMPublicKey(),
+		PQSigningPublicKey: initiator.pqKeys.MLDSAPublicKey(),
+	}
+	peer := types.Node{
+		ID: "node-a", Name: "recipient", Key: recipient.priv.Public(),
+		PQKEMPublicKey:     recipient.pqKeys.KEMPublicKey(),
+		PQSigningPublicKey: recipient.pqKeys.MLDSAPublicKey(),
+	}
+	nm := types.Netmap{Version: 20, Self: self, Peers: []types.Node{peer}}
+	if err := initiator.ensurePQSessions(context.Background(), nm); err != nil {
+		t.Fatal(err)
+	}
+	if publishCount != 1 {
+		t.Fatalf("publication count = %d, want 1", publishCount)
+	}
+	if published.NodeID != self.ID || published.PeerID != peer.ID {
+		t.Fatalf("publication pair = %s -> %s, want %s -> %s",
+			published.NodeID, published.PeerID, self.ID, peer.ID)
+	}
+	session := types.PQSession{
+		InitiatorID: published.NodeID,
+		RecipientID: published.PeerID,
+		Epoch:       published.Epoch,
+		Ciphertext:  published.Ciphertext,
+		Signature:   published.Signature,
+	}
+	nm.PQSessions = []types.PQSession{session}
+	initiatorPSK, ok := initiator.pqPresharedKey(nm, peer)
+	if !ok {
+		t.Fatal("initiator could not use its repaired session")
+	}
+
+	recipientSelf := peer
+	recipientPeer := self
+	recipientNM := types.Netmap{
+		Version: nm.Version, Self: recipientSelf,
+		Peers: []types.Node{recipientPeer}, PQSessions: []types.PQSession{session},
+	}
+	recipientPSK, ok := recipient.pqPresharedKey(recipientNM, recipientPeer)
+	if !ok {
+		t.Fatal("recipient could not decapsulate the repaired session")
+	}
+	if initiatorPSK.IsZero() || initiatorPSK != recipientPSK {
+		t.Fatal("repaired endpoints derived different WireGuard PSKs")
+	}
+
+	if err := recipient.ensurePQSessions(context.Background(), recipientNM); err != nil {
+		t.Fatal(err)
+	}
+	if publishCount != 1 {
+		t.Fatalf("valid incoming session was unnecessarily replaced; publications = %d", publishCount)
+	}
+}
 
 type recoveryEngine struct {
 	recoveries        int

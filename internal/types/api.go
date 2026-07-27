@@ -128,7 +128,7 @@ type PollResponse struct {
 }
 
 // PQSessionRequest publishes an end-to-end authenticated ML-KEM encapsulation.
-// Only InitiatorID may submit it and it must be the canonical smaller node ID.
+// Only NodeID may submit it. Either endpoint may initiate recovery.
 type PQSessionRequest struct {
 	NodeID          string `json:"nodeID"`
 	PeerID          string `json:"peerID"`
