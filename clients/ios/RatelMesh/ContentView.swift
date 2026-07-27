@@ -28,6 +28,16 @@ struct ContentView: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        Group {
+            if privacyAcknowledged {
+                mainContent
+            } else {
+                privacyGuide
+            }
+        }
+    }
+
+    private var mainContent: some View {
         NavigationStack {
             List {
                 Section {
@@ -166,12 +176,6 @@ struct ContentView: View {
             .sheet(isPresented: $showingNetworkDoctor) {
                 NetworkDoctorView(store: model.networkDoctor, language: language)
             }
-            .onAppear {
-                if !privacyAcknowledged && !model.showingSettings { showingPrivacy = true }
-            }
-            .onChange(of: model.showingSettings) { isShowing in
-                if !isShowing && !privacyAcknowledged { showingPrivacy = true }
-            }
             .alert(t("操作失败", "Operation failed"), isPresented: Binding(
                 get: { model.errorCode != nil },
                 set: { if !$0 { model.acknowledgeError() } }
@@ -186,6 +190,21 @@ struct ContentView: View {
     private var privacyGuide: some View {
         NavigationStack {
             List {
+                Section(t("RatelMesh 使用的数据", "Data RatelMesh uses")) {
+                    Text(t(
+                        "RatelMesh 会将设备名和设备标识发送给你的 RatelMesh 租户，用于入网和识别本设备。如果你允许定位权限，它只会发送用于私人网络地图的粗略区域。",
+                        "RatelMesh sends your device name and a device identifier to your RatelMesh tenant so it can enroll and identify this device. If you allow location access, it sends only a coarse region for the private network map."
+                    ))
+                }
+                Section(t("不出售或向第三方披露", "No sale or third-party disclosure")) {
+                    Text(t(
+                        "RatelMesh 不会出售这些数据、将其用于第三方目的或向第三方披露，也不会收集浏览内容或明文隧道流量。",
+                        "RatelMesh does not sell this data, use it for third-party purposes, or disclose it to third parties. It does not collect browsing content or plaintext tunnel traffic."
+                    ))
+                    if let privacyURL = URL(string: "https://ratelmesh.com/privacy") {
+                        Link(t("阅读隐私政策", "Read the privacy policy"), destination: privacyURL)
+                    }
+                }
                 Section(t("系统定位", "System location")) {
                     Text(t("VPN 出口只改变公网 IP，不会替换 iPhone 或 iPad 的系统定位。请在“设置 → 隐私与安全性 → 定位服务”中，将非必要应用设为“永不”“下次询问”，或只提供模糊位置。", "A VPN exit changes your public IP, not the iPhone or iPad system location. Review Settings → Privacy & Security → Location Services and limit location access for apps that do not need it."))
                 }
@@ -199,11 +218,10 @@ struct ContentView: View {
                     Button(t("打开 RatelMesh 系统设置", "Open RatelMesh system settings")) {
                         if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                     }
-                    Button(t("知道了", "Got it")) {
+                    Button(t("我已了解并继续", "I understand and continue")) {
                         privacyAcknowledged = true
                         showingPrivacy = false
                     }
-                    Button(t("下次提醒", "Remind me next time")) { showingPrivacy = false }
                 }
                 Section {
                     Text(t("iOS 不允许第三方应用静默关闭全局定位、Wi-Fi 扫描、蓝牙或其他应用的权限。RatelMesh 只提供风险说明和设置入口，由用户确认。", "iOS does not allow third-party apps to silently disable global location, Wi-Fi scanning, Bluetooth or another app's permissions. RatelMesh explains the risk and opens Settings; you remain in control."))
@@ -214,6 +232,7 @@ struct ContentView: View {
             .navigationTitle(t("地理位置隐私", "Geographic privacy"))
             .navigationBarTitleDisplayMode(.inline)
         }
+        .interactiveDismissDisabled(!privacyAcknowledged)
     }
 
     private func openRemote(_ scheme: String, _ meshIP: String, _ port: UInt16) {
@@ -289,7 +308,10 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(model.isConnected ? .red : RatelMeshBrand.action(for: colorScheme))
-            .disabled(!model.appGroupReady || model.isBusy || model.isTransitioning)
+            .disabled(
+                !model.appGroupReady || model.isBusy || model.isTransitioning
+                    || !privacyAcknowledged
+            )
         }
         .padding(24)
         .frame(maxWidth: .infinity)

@@ -25,7 +25,13 @@
 "Do not use an exit device" = "출구 장치를 사용하지 않음";
 "EXIT selected; verifying traffic · %@" = "EXIT 선택됨, 트래픽 검증 중 · %@";
 "Geographic privacy" = "위치 개인정보 보호";
+"Data RatelMesh uses" = "RatelMesh가 사용하는 데이터";
+"RatelMesh sends your device name and a device identifier to your RatelMesh tenant so it can enroll and identify this device. If you allow location access, it sends only a coarse region for the private network map." = "RatelMesh는 이 기기를 등록하고 식별하기 위해 기기 이름과 기기 식별자를 RatelMesh 테넌트로 전송합니다. 위치 접근을 허용하면 비공개 네트워크 지도에 대략적인 지역만 전송합니다.";
+"No sale or third-party disclosure" = "판매 또는 제3자 공개 없음";
+"RatelMesh does not sell this data, use it for third-party purposes, or disclose it to third parties. It does not collect browsing content or plaintext tunnel traffic." = "RatelMesh는 이 데이터를 판매하거나 제3자의 목적으로 사용하거나 제3자에게 공개하지 않습니다. 탐색 내용이나 암호화되지 않은 터널 트래픽도 수집하지 않습니다.";
+"Read the privacy policy" = "개인정보 처리방침 읽기";
 "Got it" = "확인";
+"I understand and continue" = "이해했으며 계속합니다";
 "Internet route" = "인터넷 경로";
 "Internet route: DIRECT" = "인터넷 경로: DIRECT";
 "Internet route: EXIT verified · %@" = "인터넷 경로: EXIT 확인됨 · %@";

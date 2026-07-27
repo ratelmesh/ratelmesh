@@ -25,7 +25,13 @@
 "Do not use an exit device" = "不使用出口裝置";
 "EXIT selected; verifying traffic · %@" = "已選擇 EXIT，正在驗證流量 · %@";
 "Geographic privacy" = "地理位置隱私";
+"Data RatelMesh uses" = "RatelMesh 使用的資料";
+"RatelMesh sends your device name and a device identifier to your RatelMesh tenant so it can enroll and identify this device. If you allow location access, it sends only a coarse region for the private network map." = "RatelMesh 會將裝置名稱和裝置識別碼傳送至你的 RatelMesh 租戶，用於入網和識別此裝置。如果你允許定位權限，它只會傳送用於私人網路地圖的粗略區域。";
+"No sale or third-party disclosure" = "不出售或向第三方揭露";
+"RatelMesh does not sell this data, use it for third-party purposes, or disclose it to third parties. It does not collect browsing content or plaintext tunnel traffic." = "RatelMesh 不會出售這些資料、將其用於第三方目的或向第三方揭露，也不會收集瀏覽內容或明文隧道流量。";
+"Read the privacy policy" = "閱讀隱私權政策";
 "Got it" = "知道了";
+"I understand and continue" = "我已瞭解並繼續";
 "Internet route" = "網際網路路徑";
 "Internet route: DIRECT" = "網際網路路徑：DIRECT 直接連線";
 "Internet route: EXIT verified · %@" = "網際網路路徑：EXIT 已驗證 · %@";

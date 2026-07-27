@@ -47,6 +47,53 @@ final class MobileConfigurationTests: XCTestCase {
         )
     }
 
+    func testFirstUsePrivacyDisclosureMatchesVPNReviewRequirements() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/ContentView.swift"),
+            encoding: .utf8
+        )
+        let requiredCopy = [
+            "Data RatelMesh uses",
+            "device name and a device identifier",
+            "only a coarse region",
+            "No sale or third-party disclosure",
+            "does not sell this data",
+            "does not collect browsing content or plaintext tunnel traffic",
+            "https://ratelmesh.com/privacy",
+            ".interactiveDismissDisabled(!privacyAcknowledged)",
+            "|| !privacyAcknowledged",
+            "if privacyAcknowledged",
+            "mainContent",
+            "} else {\n                privacyGuide",
+        ]
+        for text in requiredCopy {
+            XCTAssertTrue(source.contains(text), "missing first-use privacy disclosure: \(text)")
+        }
+
+        let locales = [
+            "de", "es", "fr", "it", "ja", "ko", "nl", "pl",
+            "pt-BR", "sv", "zh-Hans", "zh-Hant",
+        ]
+        for locale in locales {
+            let strings = try String(
+                contentsOf: iosRoot.appendingPathComponent(
+                    "RatelMesh/\(locale).lproj/Localizable.strings"
+                ),
+                encoding: .utf8
+            )
+            for key in [
+                "Data RatelMesh uses",
+                "No sale or third-party disclosure",
+                "Read the privacy policy",
+            ] {
+                XCTAssertTrue(strings.contains("\"\(key)\" = "), "\(locale) is missing \(key)")
+            }
+        }
+    }
+
     func testDeviceIdentityStateIsExcludedFromBackup() throws {
         let container = FileManager.default.temporaryDirectory
             .appendingPathComponent("ratelmesh-state-backup-\(UUID().uuidString)", isDirectory: true)
@@ -840,7 +887,9 @@ final class MobileConfigurationTests: XCTestCase {
         XCTAssertTrue(app.contains("errorQueue.enqueueLocal"))
         XCTAssertTrue(view.contains("set: { if !$0 { model.acknowledgeError() } }"))
         XCTAssertTrue(view.contains("Button(t(\"好\", \"OK\")) {}"))
-        XCTAssertTrue(view.contains(".disabled(!model.appGroupReady || model.isBusy"))
+        XCTAssertTrue(
+            view.contains("!model.appGroupReady || model.isBusy || model.isTransitioning")
+        )
         XCTAssertTrue(view.contains(".disabled(!model.appGroupReady)"))
     }
 

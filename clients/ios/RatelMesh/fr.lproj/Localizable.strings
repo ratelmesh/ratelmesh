@@ -19,6 +19,11 @@
 "Devices using this EXIT" = "Appareils utilisant cette SORTIE";
 "Privacy" = "Confidentialité";
 "Geographic privacy" = "Confidentialité géographique";
+"Data RatelMesh uses" = "Données utilisées par RatelMesh";
+"RatelMesh sends your device name and a device identifier to your RatelMesh tenant so it can enroll and identify this device. If you allow location access, it sends only a coarse region for the private network map." = "RatelMesh envoie le nom et un identifiant de votre appareil à votre espace RatelMesh afin de l’inscrire et de l’identifier. Si vous autorisez l’accès à la localisation, seule une région approximative est envoyée pour la carte du réseau privé.";
+"No sale or third-party disclosure" = "Aucune vente ni divulgation à des tiers";
+"RatelMesh does not sell this data, use it for third-party purposes, or disclose it to third parties. It does not collect browsing content or plaintext tunnel traffic." = "RatelMesh ne vend pas ces données, ne les utilise pas à des fins tierces et ne les divulgue pas à des tiers. Il ne collecte ni le contenu de navigation ni le trafic du tunnel en clair.";
+"Read the privacy policy" = "Lire la politique de confidentialité";
 "Settings" = "Paramètres";
 "Operation failed" = "L'opération a échoué";
 "OK" = "OK";
@@ -31,6 +36,7 @@
 "Review networking and wireless options under Location Services → System Services, and disable unnecessary app tracking permissions. These changes can affect maps, Find My and nearby devices." = "Vérifiez les options de mise en réseau et sans fil sous Services de localisation → Services système, et désactivez les permissions de suivi d'application inutiles. Ces modifications peuvent affecter les Cartes, Localiser et les appareils à proximité.";
 "Open RatelMesh system settings" = "Ouvrir les paramètres système de RatelMesh";
 "Got it" = "D'accord";
+"I understand and continue" = "J’ai compris et je continue";
 "Remind me next time" = "Me rappeler la prochaine fois";
 "iOS does not allow third-party apps to silently disable global location, Wi-Fi scanning, Bluetooth or another app's permissions. RatelMesh explains the risk and opens Settings; you remain in control." = "iOS n'autorise pas les applications tierces à désactiver silencieusement la localisation globale, l'analyse Wi-Fi, le Bluetooth ou les permissions d'une autre application. RatelMesh explique le risque et ouvre les Paramètres ; vous restez en contrôle.";
 "Disconnect" = "Déconnexion";

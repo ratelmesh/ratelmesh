@@ -16,6 +16,11 @@
 "Devices using this EXIT" = "Geräte, die diesen EXIT verwenden";
 "Privacy" = "Datenschutz";
 "Geographic privacy" = "Geografischer Datenschutz";
+"Data RatelMesh uses" = "Von RatelMesh verwendete Daten";
+"RatelMesh sends your device name and a device identifier to your RatelMesh tenant so it can enroll and identify this device. If you allow location access, it sends only a coarse region for the private network map." = "RatelMesh sendet den Gerätenamen und eine Gerätekennung an deinen RatelMesh-Mandanten, damit dieses Gerät registriert und erkannt werden kann. Wenn du den Standortzugriff erlaubst, wird nur eine ungefähre Region für die private Netzwerkkarte gesendet.";
+"No sale or third-party disclosure" = "Kein Verkauf und keine Weitergabe an Dritte";
+"RatelMesh does not sell this data, use it for third-party purposes, or disclose it to third parties. It does not collect browsing content or plaintext tunnel traffic." = "RatelMesh verkauft diese Daten nicht, verwendet sie nicht für Zwecke Dritter und gibt sie nicht an Dritte weiter. Browserinhalte und unverschlüsselter Tunnelverkehr werden nicht erfasst.";
+"Read the privacy policy" = "Datenschutzerklärung lesen";
 "Settings" = "Einstellungen";
 "Operation failed" = "Operation fehlgeschlagen";
 "OK" = "OK";
@@ -57,6 +62,7 @@
 "Current route: DIRECT" = "Aktuelle Route: DIRECT";
 "Current route: EXIT verified · %@" = "Aktuelle Route: EXIT bestätigt · %@";
 "Got it" = "Verstanden";
+"I understand and continue" = "Ich habe verstanden und möchte fortfahren";
 "Cancel" = "Abbrechen";
 "System" = "System";
 "Save your RatelMesh connection settings first." = "Speichere zuerst die RatelMesh-Verbindungseinstellungen.";
