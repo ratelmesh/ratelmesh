@@ -1958,6 +1958,10 @@ const (
 	exitSilentPathMinAge   = 9 * time.Second
 	exitSilentPathMinBytes = 4 << 10
 	exitSilentPathCooldown = 45 * time.Second
+	// A serving exit does not need a speculative return path to every visible
+	// peer. A small threshold filters persistent keepalives while still letting
+	// an actual TCP/UDP exchange trigger endpoint recovery.
+	peerPathDemandMinBytes = 128
 )
 
 var errExitSilentPath = errors.New("selected exit sent traffic without encrypted replies")
@@ -2343,6 +2347,21 @@ func (d *Daemon) checkRelayTransitions(stats map[types.Key]wgengine.PeerStat, no
 		}
 		if d.cfg.ForceRelay || len(p.Endpoints) == 0 {
 			continue // liveness is recorded, but there is no path switch to decide
+		}
+		servingExit := d.cfg.Role == types.RoleExit ||
+			d.lastNetmap.Self.Capabilities.Exit ||
+			d.lastNetmap.Self.Role == types.RoleExit
+		usesThisExit := d.lastNetmap.Self.ID != "" &&
+			p.SelectedExitID == d.lastNetmap.Self.ID
+		if servingExit && !usesThisExit && d.unansweredTx[key] < peerPathDemandMinBytes {
+			// An exit server can see many coordinator-online peers that are not
+			// using it. Proactively cycling their stale candidates rebuilds the
+			// shared WireGuard interface every few seconds and can interrupt the
+			// clients that are using the exit. Defer recovery until this host
+			// actually sends meaningful traffic to that peer. A peer selecting
+			// this exit is never deferred because it needs a ready return path.
+			d.directSince[key] = now
+			continue
 		}
 
 		if !d.relayed[key] {
