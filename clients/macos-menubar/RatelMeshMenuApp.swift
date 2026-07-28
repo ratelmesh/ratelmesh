@@ -143,19 +143,9 @@ private enum RatelMeshBrand {
     }
 }
 
-private struct RatelMeshBrandMark: View {
-    let size: CGFloat
-    var template = false
-    var decorative = true
-
-    var body: some View {
-        Image(nsImage: image)
-            .interpolation(.high)
-            .frame(width: size, height: size)
-            .accessibilityHidden(decorative)
-    }
-
-    private var image: NSImage {
+@MainActor
+private enum RatelMeshBrandAssets {
+    static func image(size: CGFloat, template: Bool) -> NSImage {
         // The transparent menu mark is already bundled as Info.plist data; no runtime file lookup is required.
         if template,
            let data = Bundle.main.object(forInfoDictionaryKey: "RatelMeshMenuTemplatePNG") as? Data,
@@ -173,6 +163,19 @@ private struct RatelMeshBrandMark: View {
         guard let copy = original.copy() as? NSImage else { return original }
         copy.size = NSSize(width: size, height: size)
         return copy
+    }
+}
+
+private struct RatelMeshBrandMark: View {
+    let size: CGFloat
+    var template = false
+    var decorative = true
+
+    var body: some View {
+        Image(nsImage: RatelMeshBrandAssets.image(size: size, template: template))
+            .interpolation(.high)
+            .frame(width: size, height: size)
+            .accessibilityHidden(decorative)
     }
 }
 
@@ -1315,27 +1318,87 @@ private enum LocationPrivacyReminder {
     }
 }
 
+@MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let store = Store()
+    private let updater = UpdateStore()
+    private let popover = NSPopover()
+    private var statusItem: NSStatusItem?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        installStatusItem()
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             LocationPrivacyReminder.showIfNeeded()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+        }
+        statusItem = nil
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        showPopover()
+        return false
+    }
+
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        guard let button = item.button else {
+            NSStatusBar.system.removeStatusItem(item)
+            return
+        }
+
+        button.image = RatelMeshBrandAssets.image(size: 18, template: true)
+        button.imagePosition = .imageOnly
+        button.toolTip = "RatelMesh"
+        button.setAccessibilityLabel("RatelMesh")
+        button.target = self
+        button.action = #selector(togglePopover(_:))
+        button.sendAction(on: [.leftMouseUp])
+
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentSize = NSSize(width: 430, height: 720)
+        popover.contentViewController = NSHostingController(
+            rootView: Panel(store: store, updater: updater)
+        )
+        statusItem = item
+    }
+
+    @objc private func togglePopover(_ sender: Any?) {
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            showPopover()
+        }
+    }
+
+    private func showPopover() {
+        guard let button = statusItem?.button else { return }
+        popover.show(
+            relativeTo: button.bounds,
+            of: button,
+            preferredEdge: .minY
+        )
+        popover.contentViewController?.view.window?.makeKey()
     }
 }
 
 @main
 private struct RatelMeshMenuApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var store = Store()
-    @StateObject private var updater = UpdateStore()
 
     var body: some Scene {
-        MenuBarExtra {
-            Panel(store: store, updater: updater)
-        } label: {
-            RatelMeshBrandMark(size: 18, template: true, decorative: false)
-                .accessibilityLabel("RatelMesh")
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
     }
 }

@@ -727,14 +727,7 @@ func TestDarwinFreshRecoveryDoesNotDisablePFForCancelledIntent(t *testing.T) {
 }
 
 func TestDarwinEnforcerDetectsRulesFromCrashedProcess(t *testing.T) {
-	oldPath := darwinKillSwitchPath
-	oldLegacyPath := legacyDarwinKillSwitchPath
-	darwinKillSwitchPath = filepath.Join(t.TempDir(), "ratelmesh-killswitch.pf.conf")
-	legacyDarwinKillSwitchPath = filepath.Join(t.TempDir(), "legacy-killswitch.pf.conf")
-	t.Cleanup(func() {
-		darwinKillSwitchPath = oldPath
-		legacyDarwinKillSwitchPath = oldLegacyPath
-	})
+	setDarwinTestPaths(t)
 
 	e := &DarwinEnforcer{run: successRunner{}}
 	if e.needsRestoreLocked() {
@@ -749,14 +742,7 @@ func TestDarwinEnforcerDetectsRulesFromCrashedProcess(t *testing.T) {
 }
 
 func TestDarwinEnforcerDetectsLegacyCrashMarker(t *testing.T) {
-	oldPath := darwinKillSwitchPath
-	oldLegacyPath := legacyDarwinKillSwitchPath
-	darwinKillSwitchPath = filepath.Join(t.TempDir(), "ratelmesh-killswitch.pf.conf")
-	legacyDarwinKillSwitchPath = filepath.Join(t.TempDir(), "legacy-killswitch.pf.conf")
-	t.Cleanup(func() {
-		darwinKillSwitchPath = oldPath
-		legacyDarwinKillSwitchPath = oldLegacyPath
-	})
+	setDarwinTestPaths(t)
 	if err := os.WriteFile(legacyDarwinKillSwitchPath, []byte("managed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
