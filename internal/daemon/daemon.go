@@ -2331,6 +2331,16 @@ func (d *Daemon) checkRelayTransitions(stats map[types.Key]wgengine.PeerStat, no
 		}
 		d.lastTx[key] = tx
 		prog := d.rxProgress[key]
+		if !p.Online {
+			// Coordinator presence is authoritative for path trials. Cycling the
+			// stale private/IPv6 candidates of an offline phone or laptop cannot
+			// recover it, but every candidate change reconfigures the shared
+			// WireGuard interface and can briefly disturb a healthy EXIT peer.
+			// Refresh the trial baseline so a peer that returns online receives a
+			// complete candidate window instead of rotating immediately.
+			d.directSince[key] = now
+			continue
+		}
 		if d.cfg.ForceRelay || len(p.Endpoints) == 0 {
 			continue // liveness is recorded, but there is no path switch to decide
 		}
