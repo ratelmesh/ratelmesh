@@ -1397,6 +1397,26 @@ func (d *Daemon) startExactSocketProbe(key types.Key, pp *magicsock.PeerPath, ca
 			delete(d.probing, key)
 			d.mu.Unlock()
 		}()
+		var networkErr error
+		beforeType, before := pp.Current()
+		if beforeType == magicsock.PathDirect && before.IsValid() {
+			// Multiple candidates can be simultaneously reachable on the same
+			// NAT (for example, a LAN address and the router's hairpin address).
+			// Re-racing all of them every ten seconds makes the nondeterministic
+			// winner alternate and unnecessarily rebuilds the whole WireGuard
+			// interface. Keep a proven endpoint while it still answers; only a
+			// failed recheck opens a new candidate race.
+			stickyCtx, stickyCancel := context.WithTimeout(runCtx, time.Second)
+			err := prober.ProbeEndpoint(stickyCtx, before)
+			stickyCancel()
+			if err == nil {
+				d.setPeerPathStatus(key, string(magicsock.PathDirect))
+				return
+			}
+			if isLocalSocketBindingError(err) {
+				networkErr = err
+			}
+		}
 		ctx, cancel := context.WithTimeout(runCtx, 3*time.Second)
 		defer cancel()
 		type result struct {
@@ -1404,7 +1424,6 @@ func (d *Daemon) startExactSocketProbe(key types.Key, pp *magicsock.PeerPath, ca
 			err error
 		}
 		results := make(chan result, len(candidates))
-		var networkErr error
 		for _, candidate := range candidates {
 			candidate := candidate
 			go func() {

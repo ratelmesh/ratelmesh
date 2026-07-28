@@ -53,7 +53,7 @@ func (d *Daemon) ensurePQSessions(ctx context.Context, nm types.Netmap) error {
 			}
 		}
 		d.mu.Lock()
-		previous := d.pqSecrets[peer.ID]
+		previous, hadPrevious := d.pqSecrets[peer.ID]
 		d.mu.Unlock()
 		epoch := nm.Version
 		for _, floor := range []uint64{previous.Epoch, current.Epoch} {
@@ -99,9 +99,40 @@ func (d *Daemon) ensurePQSessions(ctx context.Context, nm types.Netmap) error {
 		d.pqSecrets = secrets
 		d.mu.Unlock()
 		if err := d.client.PublishPQSession(ctx, nm.Self.ID, peer.ID, epoch, ciphertext, signature); err != nil {
+			if rollbackErr := d.rollbackPQSecret(peer.ID, record, previous, hadPrevious); rollbackErr != nil {
+				return fmt.Errorf("publish PQ session for %s: %w (local rollback failed: %v)", peer.Name, err, rollbackErr)
+			}
 			return fmt.Errorf("publish PQ session for %s: %w", peer.Name, err)
 		}
 	}
+	return nil
+}
+
+// rollbackPQSecret removes a staged initiator secret whose coordinator
+// publication failed, or restores the prior record it replaced. Persisting
+// before publishing is required for crash safety, but a competing same-epoch
+// publication can legitimately win. Keeping the rejected secret would make the
+// loser reject the winner's authenticated session and temporarily derive a
+// different WireGuard PSK.
+func (d *Daemon) rollbackPQSecret(peerID string, attempted, previous pqSecretRecord, hadPrevious bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if current, ok := d.pqSecrets[peerID]; !ok || current != attempted {
+		return nil
+	}
+	next := make(map[string]pqSecretRecord, len(d.pqSecrets))
+	for id, value := range d.pqSecrets {
+		next[id] = value
+	}
+	if hadPrevious {
+		next[peerID] = previous
+	} else {
+		delete(next, peerID)
+	}
+	if err := savePQSecrets(d.cfg.StateDir, d.priv, next); err != nil {
+		return err
+	}
+	d.pqSecrets = next
 	return nil
 }
 
