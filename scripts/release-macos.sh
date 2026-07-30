@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build, Developer ID sign, notarize, staple, and sign the update feed for a
-# production macOS release. This script intentionally has no unsigned mode.
+# Build, Developer ID sign, and sign the update feed for a production macOS
+# release. Apple notarization remains mandatory unless the release operator
+# explicitly authorizes a disclosed unnotarized release.
 set -euo pipefail
 
 release_identity_fail() {
@@ -150,6 +151,7 @@ INSTALLER_IDENTITY="${RATELMESH_INSTALLER_IDENTITY:-}"
 NOTARY_PROFILE="${RATELMESH_NOTARY_PROFILE:-}"
 NOTARY_KEYCHAIN="${RATELMESH_NOTARY_KEYCHAIN:-}"
 APPLE_TEAM_ID="${RATELMESH_APPLE_TEAM_ID:-}"
+ALLOW_UNNOTARIZED="${RATELMESH_ALLOW_UNNOTARIZED_RELEASE:-}"
 PACKAGE_NAME="RatelMesh-macOS-$VERSION-universal.pkg"
 PACKAGE_URL="https://download.ratelmesh.com/download/$PACKAGE_NAME"
 
@@ -163,9 +165,17 @@ if [[ "$(GOTOOLCHAIN=local go version | awk '{print $3}')" != "$RATELMESH_GO_VER
   echo "Go $RATELMESH_GO_VERSION is required for this release" >&2
   exit 2
 fi
+if [[ -n "$ALLOW_UNNOTARIZED" && "$ALLOW_UNNOTARIZED" != "1" ]]; then
+  echo "RATELMESH_ALLOW_UNNOTARIZED_RELEASE must be exactly 1 when set" >&2
+  exit 2
+fi
 if [[ -z "$APPLICATION_IDENTITY" || -z "$INSTALLER_IDENTITY" ||
-      -z "$NOTARY_PROFILE" || -z "$APPLE_TEAM_ID" ]]; then
-  echo "RATELMESH_APPLICATION_IDENTITY, RATELMESH_INSTALLER_IDENTITY, RATELMESH_NOTARY_PROFILE, and RATELMESH_APPLE_TEAM_ID are required" >&2
+      -z "$APPLE_TEAM_ID" ]]; then
+  echo "RATELMESH_APPLICATION_IDENTITY, RATELMESH_INSTALLER_IDENTITY, and RATELMESH_APPLE_TEAM_ID are required" >&2
+  exit 2
+fi
+if [[ "$ALLOW_UNNOTARIZED" != "1" && -z "$NOTARY_PROFILE" ]]; then
+  echo "RATELMESH_NOTARY_PROFILE is required unless RATELMESH_ALLOW_UNNOTARIZED_RELEASE=1" >&2
   exit 2
 fi
 "$REPO/scripts/release-macos.sh" identity-check requested \
@@ -223,17 +233,23 @@ fi
 "$REPO/scripts/release-macos.sh" identity-check package \
   "$STAGE/$PACKAGE_NAME" "$INSTALLER_IDENTITY" "$APPLE_TEAM_ID"
 
-NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
-if [[ -n "$NOTARY_KEYCHAIN" ]]; then
-  NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
+APPLE_NOTARIZATION="notarized"
+if [[ "$ALLOW_UNNOTARIZED" == "1" ]]; then
+  APPLE_NOTARIZATION="not_available"
+  echo "WARNING: publishing a Developer ID-signed package without Apple notarization" >&2
+else
+  NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+  if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+    NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
+  fi
+  NOTARY_RESULT="$EXPANDED/notary-result.json"
+  xcrun notarytool submit "$STAGE/$PACKAGE_NAME" "${NOTARY_ARGS[@]}" \
+    --wait --output-format json >"$NOTARY_RESULT"
+  "$REPO/scripts/release-macos.sh" notary-check "$NOTARY_RESULT"
+  xcrun stapler staple "$STAGE/$PACKAGE_NAME"
+  xcrun stapler validate "$STAGE/$PACKAGE_NAME"
+  spctl --assess --type install -vv "$STAGE/$PACKAGE_NAME"
 fi
-NOTARY_RESULT="$EXPANDED/notary-result.json"
-xcrun notarytool submit "$STAGE/$PACKAGE_NAME" "${NOTARY_ARGS[@]}" \
-  --wait --output-format json >"$NOTARY_RESULT"
-"$REPO/scripts/release-macos.sh" notary-check "$NOTARY_RESULT"
-xcrun stapler staple "$STAGE/$PACKAGE_NAME"
-xcrun stapler validate "$STAGE/$PACKAGE_NAME"
-spctl --assess --type install -vv "$STAGE/$PACKAGE_NAME"
 
 # Publish the exact GPL source archive that accompanies the bundled `wg`
 # binary. It is also inside the package, but a sidecar makes source access
@@ -259,9 +275,10 @@ go run "$REPO/scripts/update-manifest.go" sign \
 
 PACKAGE_SHA=$(shasum -a 256 "$STAGE/$PACKAGE_NAME" | awk '{print $1}')
 MANIFEST_SHA=$(shasum -a 256 "$STAGE/macos/latest.json" | awk '{print $1}')
-printf '{\n  "version": "%s",\n  "sourceCommit": "%s",\n  "sourceDateEpoch": %s,\n  "package": "%s",\n  "packageSHA256": "%s",\n  "manifestSHA256": "%s",\n  "wireGuardToolsSHA256": "%s"\n}\n' \
+printf '{\n  "version": "%s",\n  "sourceCommit": "%s",\n  "sourceDateEpoch": %s,\n  "package": "%s",\n  "packageSHA256": "%s",\n  "manifestSHA256": "%s",\n  "wireGuardToolsSHA256": "%s",\n  "appleNotarization": "%s"\n}\n' \
   "$VERSION" "$SOURCE_COMMIT" "$SOURCE_DATE_EPOCH" "$PACKAGE_NAME" \
-  "$PACKAGE_SHA" "$MANIFEST_SHA" "$SOURCE_SHA" >"$STAGE/BUILD-PROVENANCE.json"
+  "$PACKAGE_SHA" "$MANIFEST_SHA" "$SOURCE_SHA" "$APPLE_NOTARIZATION" \
+  >"$STAGE/BUILD-PROVENANCE.json"
 find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f -exec chmod 0644 {} +
 go run "$REPO/scripts/publish-directory" "$STAGE" "$OUTDIR"

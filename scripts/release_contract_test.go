@@ -242,6 +242,28 @@ func TestMacOSReleaseBindsBothIdentitiesToRequiredTeam(t *testing.T) {
 	}
 }
 
+func TestMacOSReleaseRequiresExplicitUnnotarizedAuthorization(t *testing.T) {
+	source := readReleaseFile(t, "release-macos.sh")
+	for _, required := range []string{
+		`ALLOW_UNNOTARIZED="${RATELMESH_ALLOW_UNNOTARIZED_RELEASE:-}"`,
+		`"$ALLOW_UNNOTARIZED" != "1" && -z "$NOTARY_PROFILE"`,
+		`RATELMESH_ALLOW_UNNOTARIZED_RELEASE must be exactly 1 when set`,
+		`APPLE_NOTARIZATION="notarized"`,
+		`APPLE_NOTARIZATION="not_available"`,
+		`publishing a Developer ID-signed package without Apple notarization`,
+		`"appleNotarization": "%s"`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Errorf("release-macos.sh lacks unnotarized release control %q", required)
+		}
+	}
+	optIn := strings.Index(source, `if [[ "$ALLOW_UNNOTARIZED" == "1" ]]`)
+	manifest := strings.Index(source, `update-manifest.go" sign`)
+	if optIn < 0 || manifest < 0 || optIn > manifest {
+		t.Fatal("unnotarized authorization must be resolved before the update feed is signed")
+	}
+}
+
 func TestMacOSReleaseNotaryVerifierFailsClosed(t *testing.T) {
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "plutil"), `#!/bin/sh

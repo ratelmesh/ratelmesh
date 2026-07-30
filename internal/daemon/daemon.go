@@ -558,22 +558,8 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 			defer srv.Close()
 			if resolv != nil {
 				if host, _, e := net.SplitHostPort(d.cfg.DNSAddr); e == nil {
-					if err := resolv.Install(host); err != nil {
-						d.log.Error("resolv.conf takeover failed", "err", err)
-					} else {
-						d.log.Info("resolv.conf now points at MagicDNS", "server", host)
-						d.mu.Lock()
-						d.systemResolver = resolv
-						d.mu.Unlock()
-						defer func() {
-							if err := resolv.Restore(); err != nil {
-								d.log.Warn("system resolver restore failed", "err", err)
-							}
-							d.mu.Lock()
-							d.systemResolver = nil
-							d.mu.Unlock()
-						}()
-					}
+					resolverDone := d.startSystemResolverSupervisor(ctx, resolv, host)
+					defer func() { <-resolverDone }()
 				}
 			}
 		}
@@ -2871,7 +2857,7 @@ func (d *Daemon) relayDNSPut(addr string, addrs []netip.AddrPort, ttl time.Durat
 // review §4).
 func (d *Daemon) effectiveDNS(exitActive bool) string {
 	d.mu.Lock()
-	haveDNS := d.dnsServer != nil
+	haveDNS := d.dnsServer != nil && (!d.cfg.ManageResolv || d.systemResolver != nil)
 	d.mu.Unlock()
 	if exitActive && d.cfg.TunnelDNS != "" && haveDNS {
 		return d.cfg.TunnelDNS
