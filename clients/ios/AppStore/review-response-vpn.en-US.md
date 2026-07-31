@@ -1,61 +1,12 @@
-# RatelMesh App Store metadata (en-US)
+# App Review response: VPN data handling (en-US)
 
-- Name: `RatelMesh`
-- Subtitle: `Your network. Your control.`
-- Primary category: `Utilities`
-- Secondary category: `Productivity`
-- Price: `Free`
-- Privacy policy URL: `https://ratelmesh.com/privacy`
-- Support URL: `https://ratelmesh.com/help`
-- Marketing URL: `https://ratelmesh.com/`
-- SKU: `RATELMESH-IOS-001`
-- Copyright: `2026 Future Alpha LLC`
+Copy the text below into both the App Review message reply and the App Review
+Information notes. Reconfirm the production hosting region and deployed
+service behavior before sending it.
 
-## Promotional text
+---
 
-Reach your own devices, use a trusted exit, and diagnose connection problems
-without handing device keys or tunnel contents to a hosted VPN provider.
-
-## Description
-
-RatelMesh gives you a practical path back to your own network.
-
-Enroll with a one-time code from your RatelMesh administrator, connect directly
-to devices in your private mesh, or route internet traffic through an exit you
-control. The built-in Network Doctor checks the Coordinator, Relay, exit,
-WireGuard, MTU, DNS, IP routing, and media connectivity, then produces a
-redacted report you can review before sharing.
-
-RatelMesh keeps each device's private tunnel keys on that device. The service
-does not store your passwords, webpage content, or plaintext tunnel traffic.
-Temporary access and exit selection remain visible and under administrator or
-device-owner control.
-
-RatelMesh is for people and small teams that want the control of a self-managed
-network without maintaining every moving part themselves. A RatelMesh tenant
-and a one-time enrollment code are required.
-
-## Keywords
-
-`mesh,vpn,wireguard,private network,exit node,remote access,network doctor,privacy`
-
-## Review notes
-
-RatelMesh is a Network Extension VPN client. It requires a one-time enrollment
-code issued by a RatelMesh tenant administrator. Place a fresh review code and
-its expiration in App Review Information immediately before submission; never
-commit the code to source control.
-
-The main app and Packet Tunnel extension use the same App Group and Keychain
-access group. The app requests coarse location only when the user authorizes it
-to place the device in a coarse region on the private network map; exact
-coordinates remain on the device.
-
-The same binary is intended to be available on Apple silicon Macs as an app
-designed for iPad. The separately downloaded macOS menu-bar package is not the
-binary submitted through App Store Connect.
-
-### VPN data handling answers requested by App Review
+Hello App Review,
 
 RatelMesh contains VPN functionality. It uses Apple's Network Extension
 packet-tunnel API and WireGuard to connect a device to a private RatelMesh
@@ -75,12 +26,14 @@ explicitly authorized.
    sends only a coarse region; exact coordinates remain on the device.
    Handshake times and byte counters are evaluated on the device and are not
    sent to analytics.
+
 2. **Why is this information collected?** It is used only to enroll and
    authenticate the device, create and distribute its private-network
    configuration, discover permitted peers, configure routes, display
    connection state, operate the user's selected exit, and diagnose
    connectivity when the user requests it. It is not used for advertising,
    cross-app tracking, marketing profiles, or sale.
+
 3. **Is it shared with third parties, and where is it stored?** RatelMesh does
    not sell this information or share it with third parties for their own
    purposes. Operational control-plane records are stored on RatelMesh
@@ -101,3 +54,6 @@ Relay, DNS resolver, Cloudflare IP-reachability endpoints, and configured media
 canaries. Those endpoints can observe the source or exit public IP as part of a
 normal network request. RatelMesh does not persist that observed public IP, and
 the shareable diagnostic report redacts target and interface identifiers.
+
+Please let us know if any additional detail or a review demonstration is
+needed.

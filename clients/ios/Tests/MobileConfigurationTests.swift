@@ -98,6 +98,57 @@ final class MobileConfigurationTests: XCTestCase {
         }
     }
 
+    func testAppReviewVPNResponseMatchesImplementedDataFlow() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let metadata = try String(
+            contentsOf: iosRoot.appendingPathComponent("AppStore/metadata.en-US.md"),
+            encoding: .utf8
+        )
+        let response = try String(
+            contentsOf: iosRoot.appendingPathComponent(
+                "AppStore/review-response-vpn.en-US.md"
+            ),
+            encoding: .utf8
+        )
+        let normalizedMetadata = metadata
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let normalizedResponse = response
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let requiredCopy = [
+            "RatelMesh contains VPN functionality",
+            "does not collect or store browsing history",
+            "plaintext packet payloads",
+            "WireGuard private key and session credential remain in the device Keychain",
+            "exact coordinates remain on the device",
+            "not used for advertising, cross-app tracking, marketing profiles, or sale",
+            "does not sell this information or share it with third parties for their own purposes",
+            "Tokyo, Japan",
+            "relay transports encrypted WireGuard packets",
+            "selected exit necessarily sees destination IP addresses, timing, and traffic volume",
+            "does not persist tunnel contents or DNS browsing history",
+            "Network Doctor is optional",
+            "does not persist that observed public IP",
+        ]
+        for text in requiredCopy {
+            XCTAssertTrue(
+                normalizedMetadata.contains(text),
+                "App Review notes are missing: \(text)"
+            )
+            XCTAssertTrue(
+                normalizedResponse.contains(text),
+                "App Review reply is missing: \(text)"
+            )
+        }
+        XCTAssertFalse(response.contains("ENROLLMENT_CODE"))
+        XCTAssertFalse(response.contains("PASSWORD"))
+    }
+
     func testDeviceIdentityStateIsExcludedFromBackup() throws {
         let container = FileManager.default.temporaryDirectory
             .appendingPathComponent("ratelmesh-state-backup-\(UUID().uuidString)", isDirectory: true)

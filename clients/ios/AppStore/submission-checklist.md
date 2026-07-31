@@ -36,6 +36,20 @@ Collected and linked to the user for App Functionality, never for tracking:
 No data is used for tracking. Keep these answers aligned with
 `Shared/PrivacyInfo.xcprivacy` and `https://ratelmesh.com/privacy`.
 
+## VPN review questionnaire
+
+- Confirm the submission is described as a Network Extension VPN client; do
+  not tell App Review that the app lacks VPN functionality.
+- Copy the complete response from `review-response-vpn.en-US.md` into both the
+  App Review message reply and the App Review Information notes.
+- Recheck the response against `docs/privacy-data-map.md`, the production
+  hosting region, and the deployed relay/exit behavior immediately before
+  sending it. Do not remove the tenant-authorized relay/exit disclosure.
+- Keep enrollment codes, account credentials, and reviewer contact details out
+  of the committed response template.
+- If the deployed service changes its storage region, processors, retention,
+  diagnostics, or relay/exit logging, update the response before resubmission.
+
 ## Export compliance
 
 - The app implements encryption outside the Apple operating system, including
