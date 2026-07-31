@@ -28,12 +28,16 @@ func (d *Daemon) superviseSystemResolver(
 		// set empty; without refreshing it, switching EXIT -> DIRECT makes
 		// MagicDNS answer public names with NXDOMAIN.
 		systemUpstreams := resolver.CurrentUpstreams()
-		if err := resolver.Install(serverIP); err == nil {
+		if len(systemUpstreams) == 0 {
+			if attempt == 1 {
+				d.log.Warn("system resolver takeover deferred", "reason", "no usable physical DNS upstream")
+			} else {
+				d.log.Debug("system resolver takeover still unavailable", "attempt", attempt, "reason", "no usable physical DNS upstream")
+			}
+		} else if err := resolver.Install(serverIP); err == nil {
 			d.mu.Lock()
 			d.systemResolver = resolver
-			if len(systemUpstreams) > 0 {
-				d.dnsSystemUpstrms = append([]string(nil), systemUpstreams...)
-			}
+			d.dnsSystemUpstrms = append([]string(nil), systemUpstreams...)
 			srv := d.dnsServer
 			tunnelMode := d.dnsModeKnown && d.dnsTunnelMode
 			directUpstreams := append([]string(nil), d.dnsSystemUpstrms...)

@@ -19,7 +19,10 @@
 - Packet Tunnel bundle: `com.ratelmesh.ios.PacketTunnel`.
 - Confirm `get-task-allow=false` and `beta-reports-active=true` in both
   production provisioning profiles.
-- Confirm `ITSAppUsesNonExemptEncryption=true`.
+- Confirm `ITSAppUsesNonExemptEncryption=false` while the release uses only
+  published standard cryptography and excludes France.
+- Confirm `ITSEncryptionExportComplianceCode` is absent unless Apple has
+  approved documentation and issued a value.
 - Run `Scripts/verify-archive.sh` before upload.
 
 ## Privacy answers
@@ -38,10 +41,13 @@ No data is used for tracking. Keep these answers aligned with
 - The app implements encryption outside the Apple operating system, including
   WireGuard and published standard post-quantum algorithms.
 - Do not answer that the app uses no encryption or only Apple's encryption.
-- Complete Apple's encryption questionnaire and attach any required regional
-  declaration before review.
-- For the first release, exclude France unless the required French encryption
-  declaration has been accepted.
+- Answer Apple's encryption questionnaire with standard algorithms and no
+  proprietary algorithms.
+- For the first release, exclude France. In this scope Apple does not require a
+  document upload; `ITSAppUsesNonExemptEncryption=false` records that
+  document-upload exemption rather than an absence of encryption.
+- Reassess U.S. self-classification/reporting obligations outside App Store
+  Connect, and complete the French declaration before adding France.
 
 ## Review and release
 

@@ -33,6 +33,8 @@
 "Help" = "Hjälp";
 "Uninstall…" = "Avinstallera…";
 "Quit" = "Avsluta";
+"More" = "Mer";
+"Quit Menu" = "Avsluta menyn";
 "Switching to DIRECT…" = "Växlar till DIRECT…";
 "Selecting EXIT · %@…" = "Väljer EXIT · %@…";
 "EXIT route active · verifying traffic…" = "EXIT-väg aktiv · verifierar trafik…";

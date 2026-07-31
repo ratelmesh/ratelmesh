@@ -8,6 +8,8 @@
 	<string>RatelMesh</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconFile</key>
+	<string>RatelMesh.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -22,20 +24,19 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocationUsageDescription</key>
+	<string>RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this Mac.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this iPhone or iPad.</string>
+	<string>RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this Mac.</string>
 	<key>RatelMeshAppGroup</key>
 	<string>$(RATELMESH_APP_GROUP)</string>
 	<key>RatelMeshKeychainAccessGroup</key>
 	<string>$(RATELMESH_KEYCHAIN_GROUP)</string>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
 </dict>
 </plist>

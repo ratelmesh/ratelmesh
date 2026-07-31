@@ -37,6 +37,8 @@
 "Help" = "Hilfe";
 "Uninstall…" = "Deinstallieren…";
 "Quit" = "Beenden";
+"More" = "Mehr";
+"Quit Menu" = "Menü beenden";
 "Waiting for enrollment" = "Warten auf Registrierung";
 "Paste the one-use code from your RatelMesh account. No Terminal commands are required." = "Fügen Sie den Einmalcode Ihres RatelMesh-Kontos ein. Keine Terminal-Befehle erforderlich.";
 "Open account" = "Konto öffnen";

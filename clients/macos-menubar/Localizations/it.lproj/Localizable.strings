@@ -49,6 +49,8 @@
 "Help" = "Aiuto";
 "Uninstall…" = "Disinstalla…";
 "Quit" = "Esci";
+"More" = "Altro";
+"Quit Menu" = "Esci dal menu";
 "Version %@" = "Versione %@";
 "Uninstall RatelMesh?" = "Disinstallare RatelMesh?";
 "This stops RatelMesh, restores direct networking, and removes the app, device identity, settings, and logs from this Mac." = "Questo arresta RatelMesh, ripristina la rete diretta e rimuove l'app, l'identità del dispositivo, le impostazioni e i log da questo Mac.";

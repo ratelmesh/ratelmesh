@@ -1,7 +1,11 @@
 import Foundation
 import NetworkExtension
 import OSLog
+#if os(macOS)
+import RatelMeshControlMac
+#else
 import RatelMeshControl
+#endif
 import WireGuardKit
 
 private final class SendableCallback<Value>: @unchecked Sendable {

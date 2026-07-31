@@ -33,6 +33,8 @@
 "Help" = "Help";
 "Uninstall…" = "Verwijderen…";
 "Quit" = "Stoppen";
+"More" = "Meer";
+"Quit Menu" = "Menu afsluiten";
 "Switching to DIRECT…" = "Overschakelen naar DIRECT…";
 "Selecting EXIT · %@…" = "EXIT selecteren · %@…";
 "EXIT route active · verifying traffic…" = "EXIT-route actief · verkeer verifiëren…";

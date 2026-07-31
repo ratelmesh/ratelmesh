@@ -128,8 +128,21 @@ private enum MenuSupportTests {
         precondition(appSource.contains("copy.size = NSSize(width: size, height: size)"))
         precondition(appSource.contains(#"forResource: "BrandMarkDark", withExtension: "png""#))
         precondition(appSource.contains(#"forInfoDictionaryKey: "RatelMeshMenuTemplatePNG""#))
-        precondition(appSource.contains("ScrollView { panelContent }"))
+        precondition(appSource.contains("ScrollView {\n                operationalContent"))
         precondition(appSource.contains("ViewThatFits(in: .horizontal)"))
+        precondition(appSource.contains("private final class PanelLayoutStore: ObservableObject"))
+        precondition(appSource.contains("controller.sizingOptions = [.preferredContentSize]"))
+        precondition(!appSource.contains("popover.contentSize = NSSize"))
+        precondition(appSource.contains("visibleHeight - 48"))
+        precondition(appSource.contains("Button(role: .destructive)"))
+        precondition(appSource.contains("uninstallButton.hasDestructiveAction = true"))
+        let cancelButtonIndex = try unwrap(
+            appSource.range(of: #"alert.addButton(withTitle: Copy.text("Cancel", "取消"))"#)
+        ).lowerBound
+        let uninstallButtonIndex = try unwrap(
+            appSource.range(of: #"let uninstallButton = alert.addButton(withTitle: Copy.text("Uninstall", "卸载"))"#)
+        ).lowerBound
+        precondition(cancelButtonIndex < uninstallButtonIndex)
         precondition(appSource.contains(".privacySensitive()"))
         precondition(appSource.contains("\"planID\": planID"))
         precondition(appSource.contains("\"confirm\": true"))
@@ -198,8 +211,8 @@ private enum MenuSupportTests {
             }
             precondition(border.allSatisfy { $0 == 0 }, "menu mark clips at \(size)px")
         }
-        precondition(info?["CFBundleShortVersionString"] as? String == "0.2.39")
-        precondition(info?["CFBundleVersion"] as? String == "239")
+        precondition(info?["CFBundleShortVersionString"] as? String == "0.2.41")
+        precondition(info?["CFBundleVersion"] as? String == "241")
 
         let repositoryRoot = sourceDirectory
             .deletingLastPathComponent()
@@ -221,6 +234,16 @@ private enum MenuSupportTests {
         }
 
         let localizationRoot = sourceDirectory.appendingPathComponent("Localizations")
+        let menuReferenceData = try Data(
+            contentsOf: localizationRoot
+                .appendingPathComponent("zh-Hans.lproj/Localizable.strings")
+        )
+        let menuReference = try unwrap(
+            PropertyListSerialization.propertyList(
+                from: menuReferenceData,
+                format: nil
+            ) as? [String: String]
+        )
         let doctorReferenceData = try Data(
             contentsOf: localizationRoot
                 .appendingPathComponent("zh-Hans.lproj/NetworkDoctor.strings")
@@ -237,6 +260,26 @@ private enum MenuSupportTests {
         ).filter { $0.pathExtension == "lproj" }
         precondition(localizationDirectories.count == 12)
         for directory in localizationDirectories {
+            let menuData = try Data(
+                contentsOf: directory.appendingPathComponent("Localizable.strings")
+            )
+            let menuStrings = try unwrap(
+                PropertyListSerialization.propertyList(
+                    from: menuData,
+                    format: nil
+                ) as? [String: String]
+            )
+            precondition(menuStrings.count == menuReference.count)
+            precondition(Set(menuStrings.keys) == Set(menuReference.keys))
+            for (key, value) in menuStrings {
+                precondition(!value.isEmpty)
+                for placeholder in ["%@", "%d"] {
+                    precondition(
+                        value.components(separatedBy: placeholder).count ==
+                            key.components(separatedBy: placeholder).count
+                    )
+                }
+            }
             let prompt = try String(
                 contentsOf: directory.appendingPathComponent("InfoPlist.strings"),
                 encoding: .utf8

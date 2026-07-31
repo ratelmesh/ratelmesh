@@ -32,6 +32,8 @@
 "Help" = "Ayuda";
 "Uninstall…" = "Desinstalar…";
 "Quit" = "Salir";
+"More" = "Más";
+"Quit Menu" = "Salir del menú";
 "Switching to DIRECT…" = "Cambiando a DIRECT…";
 "Selecting EXIT · %@…" = "Seleccionando EXIT · %@…";
 "EXIT route active · verifying traffic…" = "Ruta EXIT activa · verificando tráfico…";

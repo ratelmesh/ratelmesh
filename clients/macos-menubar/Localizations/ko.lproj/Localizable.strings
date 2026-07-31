@@ -35,6 +35,8 @@
 "Paste the one-use code from your RatelMesh account. No Terminal commands are required." = "RatelMesh 계정에서 발급한 일회용 코드를 붙여 넣으세요. 터미널 명령은 필요하지 않습니다.";
 "Privacy center…" = "개인정보 보호 센터…";
 "Quit" = "종료";
+"More" = "더 보기";
+"Quit Menu" = "메뉴 종료";
 "Remind me next time" = "다음에 알림";
 "Remote access" = "원격 접속";
 "Review location privacy" = "위치 개인정보 보호 확인";

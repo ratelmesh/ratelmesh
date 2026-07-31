@@ -1,7 +1,11 @@
 import Foundation
-	import CoreLocation
+import CoreLocation
 @preconcurrency import NetworkExtension
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 private final class SystemLocationProvider: NSObject, CLLocationManagerDelegate {
 	private let manager = CLLocationManager()
@@ -15,14 +19,21 @@ private final class SystemLocationProvider: NSObject, CLLocationManagerDelegate 
 
 	func start() {
 		switch manager.authorizationStatus {
-		case .authorizedWhenInUse, .authorizedAlways: manager.requestLocation()
+		case .authorizedAlways: manager.requestLocation()
+#if os(iOS)
+		case .authorizedWhenInUse: manager.requestLocation()
+#endif
 		case .notDetermined: manager.requestWhenInUseAuthorization()
 		default: break
 		}
 	}
 
 	func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-		if manager.authorizationStatus == .authorizedWhenInUse || manager.authorizationStatus == .authorizedAlways {
+		var isAuthorized = manager.authorizationStatus == .authorizedAlways
+#if os(iOS)
+		isAuthorized = isAuthorized || manager.authorizationStatus == .authorizedWhenInUse
+#endif
+		if isAuthorized {
 			manager.requestLocation()
 		}
 	}
@@ -50,7 +61,7 @@ final class AppViewModel: ObservableObject {
     private let store = SecureConfigurationStore()
     private let tunnel: TunnelController
     let networkDoctor: NetworkDoctorStore
-	private let systemLocation = SystemLocationProvider()
+    private let systemLocation = SystemLocationProvider()
     private var refreshTask: Task<Void, Never>?
     private var sharedDefaults: UserDefaults?
     private var sharedContainerURL: URL?
@@ -71,6 +82,12 @@ final class AppViewModel: ObservableObject {
     var requiresReEnrollment: Bool { meshStatus?.enrollmentRequired == true }
 
     func prepare() async {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["RATELMESH_APP_STORE_SCREENSHOTS"] == "1" {
+            prepareAppStoreScreenshotFixture()
+            return
+        }
+#endif
         appGroupReady = false
         sharedDefaults = nil
         sharedContainerURL = nil
@@ -131,6 +148,82 @@ final class AppViewModel: ObservableObject {
             present(error)
         }
     }
+
+#if DEBUG
+    private func prepareAppStoreScreenshotFixture() {
+        appGroupReady = true
+        vpnStatus = .connected
+        authKey = "review-enrollment-code"
+#if os(macOS)
+        hostname = "review-mac"
+#else
+        hostname = "review-iphone"
+#endif
+        showingSettings =
+            ProcessInfo.processInfo.environment["RATELMESH_APP_STORE_SCREEN"] == "settings"
+        meshStatus = MobileStatus(
+            state: "Running",
+            enrollmentRequired: false,
+            coordURL: AppConstants.officialCoordinatorURL,
+            netmapVersion: 42,
+            peers: [
+                MobilePeerStatus(
+                    name: "home-exit",
+                    meshIP: "100.64.0.1",
+                    role: "exit",
+                    online: true,
+                    pathType: "direct",
+                    platform: "macOS",
+                    remoteAccessAllowed: false,
+                    remoteServices: []
+                ),
+                MobilePeerStatus(
+                    name: "office-mac",
+                    meshIP: "100.64.0.2",
+                    role: "device",
+                    online: true,
+                    pathType: "relay",
+                    platform: "macOS",
+                    remoteAccessAllowed: true,
+                    remoteServices: [
+                        MobileRemoteService(
+                            kind: "ssh",
+                            port: 22,
+                            targetMeshIp: "100.64.0.2"
+                        ),
+                        MobileRemoteService(
+                            kind: "vnc",
+                            port: 5900,
+                            targetMeshIp: "100.64.0.2"
+                        ),
+                    ]
+                ),
+                MobilePeerStatus(
+                    name: "private-nas",
+                    meshIP: "100.64.0.3",
+                    role: "device",
+                    online: true,
+                    pathType: "direct",
+                    platform: "Linux",
+                    remoteAccessAllowed: true,
+                    remoteServices: [
+                        MobileRemoteService(
+                            kind: "ssh",
+                            port: 22,
+                            targetMeshIp: "100.64.0.3"
+                        ),
+                    ]
+                ),
+            ],
+            activeExit: "home-exit",
+            selectedExit: "home-exit",
+            exitTrafficVerified: true,
+            exitClients: nil,
+            killSwitch: true,
+            dns: "1.1.1.1"
+        )
+    }
+#endif
 
     func connect() async {
         guard !isBusy else { return }
@@ -354,10 +447,15 @@ final class AppViewModel: ObservableObject {
     }
 
     private static var defaultHostname: String {
-        let raw = UIDevice.current.name
+#if os(macOS)
+        let deviceName = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+#else
+        let deviceName = UIDevice.current.name
+#endif
+        let raw = deviceName
             .lowercased()
             .replacingOccurrences(of: #"[^a-z0-9-]"#, with: "-", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        return String((raw.isEmpty ? "iphone" : raw).prefix(63))
+        return String((raw.isEmpty ? "device" : raw).prefix(63))
     }
 }

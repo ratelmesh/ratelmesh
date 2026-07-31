@@ -118,9 +118,9 @@ type Config struct {
 	// (e.g. hard NAT, or an always-relay privacy posture).
 	ForceRelay bool
 	// EnableDiscoProbe turns on the out-of-band disco reachability probe used to
-	// gate relay→direct upgrade (docs/relay-upgrade-probe.md). Off by default and
-	// still being built up sub-step by sub-step; enabling it only advertises local
-	// disco endpoints for now (no consumer yet).
+	// gate relay→direct upgrade (docs/relay-upgrade-probe.md). Off by default;
+	// peers without disco endpoints retain the legacy periodic direct trial so
+	// mixed desktop/mobile and rolling-version meshes keep recovering.
 	EnableDiscoProbe bool
 	// CoordTransport, if set (e.g. "wss"), carries the control-plane HTTP
 	// connection inside a censorship-resistant camouflage transport instead of
@@ -215,6 +215,12 @@ type Daemon struct {
 	relayed                map[types.Key]bool      // peers currently routed over the relay (fallback)
 	directSince            map[types.Key]time.Time // when each peer was last (re)programmed on direct
 	relaySince             map[types.Key]time.Time // when each peer was switched to the relay
+	discoUpgrades          map[types.Key]*discoUpgradePeer
+	discoProbe             discoProbeFunc
+	discoProbeSequence     uint64
+	discoProbesInFlight    int
+	discoProbeSlots        chan struct{}
+	discoResponderReady    bool
 	epSeen                 map[types.Key]string    // last advertised endpoints per peer (detect change)
 	lastRx                 map[types.Key]int64     // last observed rx-bytes per peer (liveness)
 	rxProgress             map[types.Key]time.Time // when rx last increased per peer (liveness)
@@ -344,6 +350,8 @@ func New(cfg Config) (*Daemon, error) {
 		relayed:           make(map[types.Key]bool),
 		directSince:       make(map[types.Key]time.Time),
 		relaySince:        make(map[types.Key]time.Time),
+		discoUpgrades:     make(map[types.Key]*discoUpgradePeer),
+		discoProbe:        magicsock.Probe,
 		epSeen:            make(map[types.Key]string),
 		lastRx:            make(map[types.Key]int64),
 		rxProgress:        make(map[types.Key]time.Time),
@@ -1992,8 +2000,9 @@ func (d *Daemon) relaySwitchLoop(ctx context.Context) {
 			continue
 		}
 		d.recordDataPlaneHealth(nil)
-		toRelay, toDirect := d.checkRelayTransitions(stats, time.Now())
 		now := time.Now()
+		toRelay, toDirect := d.checkRelayTransitions(stats, now)
+		d.startDueDiscoUpgradeProbes(ctx, stats, now)
 		silentExit, silentPath := d.checkSilentExitPathFailure(now)
 		if silentPath {
 			d.log.Warn("selected exit path stopped receiving; rebuilding WireGuard socket", "exit", silentExit)
@@ -2308,7 +2317,7 @@ func (d *Daemon) checkRelayTransitions(stats map[types.Key]wgengine.PeerStat, no
 		// Update received-byte liveness and demand-driven silent-path accounting.
 		// The first TX sample is only a baseline: cumulative bytes from before the
 		// daemon started must not masquerade as a new unanswered request.
-		stat := stats[key]
+		stat, statAvailable := stats[key]
 		rx := stat.RxBytes
 		previousRx := d.lastRx[key]
 		if rx > previousRx {
@@ -2377,6 +2386,17 @@ func (d *Daemon) checkRelayTransitions(stats map[types.Key]wgengine.PeerStat, no
 			}
 			healthy := handshakeIsFresh(stats[key], now, since) ||
 				(!prog.IsZero() && prog.After(since) && now.Sub(prog) < livenessWindow)
+			if trial := d.matchingDiscoDirectTrialLocked(p); trial != nil {
+				// A disco pong proves only that the separate probe port is
+				// reachable. Require strictly new WireGuard evidence after the
+				// endpoint switch; the normal one-second handshake tolerance
+				// could otherwise accept the relay's same-second handshake.
+				healthy = rx > trial.baselineRx ||
+					stat.LatestHandshake.After(trial.baselineHandshake)
+				if healthy {
+					d.markDiscoDirectTrialProvenLocked(trial)
+				}
+			}
 			candidates := probeCandidateEndpoints(p.Endpoints)
 			// Without a relay there is no terminal fallback: keep cycling the
 			// complete dynamic candidate set so a restarted peer or changed NAT
@@ -2409,6 +2429,7 @@ func (d *Daemon) checkRelayTransitions(stats map[types.Key]wgengine.PeerStat, no
 			if d.bridge != nil && !healthy && now.Sub(since) > relayFallbackAfter {
 				d.relayed[key] = true
 				d.relaySince[key] = now
+				d.markDiscoDirectTrialFailedLocked(p, now)
 				d.rxProgress[key] = time.Time{} // give the relay path a fresh window
 				if peerMatches(p, d.preferredExit) {
 					d.exitHandshakeAfter = now
@@ -2441,6 +2462,16 @@ func (d *Daemon) checkRelayTransitions(stats map[types.Key]wgengine.PeerStat, no
 				continue
 			}
 			if since, ok := d.relaySince[key]; ok && now.Sub(since) > upgradeRetry {
+				if d.discoUpgradeGateEnabledLocked(p) {
+					// A missing stats row cannot provide a trustworthy
+					// pre-switch baseline. Keep the one-use permit for a later
+					// tick rather than treating old relay counters as new
+					// direct-path evidence when reporting resumes.
+					if !statAvailable ||
+						!d.consumeDiscoUpgradePermitLocked(p, stat, now) {
+						continue
+					}
+				}
 				d.relayed[key] = false
 				d.directSince[key] = now
 				d.rxProgress[key] = time.Time{} // direct must prove itself anew
@@ -2923,6 +2954,10 @@ func (d *Daemon) SetExit(nameOrIP string) error {
 		d.applyMu.Unlock()
 		return fmt.Errorf("no exit node matching %q (use `ratelmesh exit list`)", nameOrIP)
 	}
+	if !match.Online {
+		d.applyMu.Unlock()
+		return fmt.Errorf("exit node %q is offline; choose an online exit or use DIRECT", match.Name)
+	}
 	d.mu.Lock()
 	previous := d.preferredExit
 	d.preferredExit = nameOrIP
@@ -3217,9 +3252,15 @@ func discoPort(listenPort uint16) (uint16, bool) {
 // the STUN'd reflexive endpoint of the disco socket (set by startDiscoResponder)
 // so peers can probe us through NAT, not only on-LAN. Off unless -disco-probe is
 // set; empty under -force-relay (same privacy contract as localEndpoints). No
-// consumer yet — the probe-gate that reads peers' disco endpoints is a later step.
+// Only advertise while the dedicated responder is known to be alive.
 func (d *Daemon) discoEndpoints() []string {
 	if !d.cfg.EnableDiscoProbe || d.cfg.ForceRelay {
+		return nil
+	}
+	d.mu.Lock()
+	ready := d.discoResponderReady
+	d.mu.Unlock()
+	if !ready {
 		return nil
 	}
 	dp, ok := discoPort(d.cfg.ListenPort)
@@ -3245,7 +3286,7 @@ func (d *Daemon) discoEndpoints() []string {
 // us over a port that does NOT collide with the WG socket kernel/wireguard-go
 // owns. Returns (nil, nil) when disabled. The responder stops on ctx and must be
 // Closed by the caller. Distinct from the WG-port responder in Run (off under
-// wgreal). No consumer yet — this only lets us answer probes.
+// wgreal).
 func (d *Daemon) startDiscoResponder(ctx context.Context) (*magicsock.DiscoResponder, error) {
 	// Suppressed under force-relay too (privacy contract): if we advertise no
 	// disco endpoint, we should not answer probes on that port either.
@@ -3260,6 +3301,10 @@ func (d *Daemon) startDiscoResponder(ctx context.Context) (*magicsock.DiscoRespo
 	if err != nil {
 		return nil, err
 	}
+	d.mu.Lock()
+	d.discoReflexive = netip.AddrPort{}
+	d.discoResponderReady = false
+	d.mu.Unlock()
 	// STUN the disco socket BEFORE serving on it, so the reflexive mapping is for
 	// THIS port (a separate ephemeral STUN socket would map a different one). The
 	// result is advertised alongside the local disco endpoints.
@@ -3276,7 +3321,19 @@ func (d *Daemon) startDiscoResponder(ctx context.Context) (*magicsock.DiscoRespo
 		cancel()
 	}
 	resp := magicsock.NewDiscoResponder(conn)
-	go resp.Serve(ctx)
+	d.mu.Lock()
+	d.discoResponderReady = true
+	d.mu.Unlock()
+	go func() {
+		err := resp.Serve(ctx)
+		d.mu.Lock()
+		d.discoResponderReady = false
+		d.discoReflexive = netip.AddrPort{}
+		d.mu.Unlock()
+		if err != nil && ctx.Err() == nil && d.log != nil {
+			d.log.Warn("disco probe responder stopped", "err", err)
+		}
+	}()
 	return resp, nil
 }
 

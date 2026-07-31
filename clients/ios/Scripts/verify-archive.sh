@@ -9,12 +9,23 @@ fi
 ARCHIVE_PATH=$1
 APP_BUNDLE="$ARCHIVE_PATH/Products/Applications/RatelMesh.app"
 EXTENSION_BUNDLE="$APP_BUNDLE/PlugIns/PacketTunnel.appex"
+CONTROL_FRAMEWORK="$APP_BUNDLE/Frameworks/RatelMeshControl.framework"
 
 test -d "$APP_BUNDLE"
 test -d "$EXTENSION_BUNDLE"
+test -d "$CONTROL_FRAMEWORK"
+if [ -e "$EXTENSION_BUNDLE/Frameworks" ]; then
+    echo "iOS extensions must not contain nested Frameworks" >&2
+    exit 1
+fi
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
-if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$APP_BUNDLE/Info.plist")" != "true" ]; then
-    echo "iOS archive must declare non-exempt encryption use" >&2
+codesign --verify --strict --verbose=2 "$CONTROL_FRAMEWORK"
+if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$APP_BUNDLE/Info.plist")" != "false" ]; then
+    echo "iOS archive must declare its current export-document exemption" >&2
+    exit 1
+fi
+if plutil -extract ITSEncryptionExportComplianceCode raw -o - "$APP_BUNDLE/Info.plist" >/dev/null 2>&1; then
+    echo "iOS archive must not contain an unapproved export compliance code" >&2
     exit 1
 fi
 

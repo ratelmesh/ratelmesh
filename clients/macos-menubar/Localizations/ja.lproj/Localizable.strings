@@ -35,6 +35,8 @@
 "Paste the one-use code from your RatelMesh account. No Terminal commands are required." = "RatelMesh アカウントで発行した一回限りのコードを貼り付けてください。ターミナル操作は不要です。";
 "Privacy center…" = "プライバシーセンター…";
 "Quit" = "終了";
+"More" = "その他";
+"Quit Menu" = "メニューを終了";
 "Remind me next time" = "次回通知";
 "Remote access" = "リモートアクセス";
 "Review location privacy" = "位置情報のプライバシーを確認";

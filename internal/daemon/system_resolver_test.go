@@ -18,11 +18,18 @@ type retryingResolver struct {
 	restores       int
 	installAttempt chan int
 	upstreams      []string
+	upstreamReads  int
+	upstreamRead   chan int
 }
 
 func (r *retryingResolver) CurrentUpstreams() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.upstreamReads++
+	select {
+	case r.upstreamRead <- r.upstreamReads:
+	default:
+	}
 	return append([]string(nil), r.upstreams...)
 }
 
@@ -53,6 +60,12 @@ func (r *retryingResolver) counts() (installs, restores int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.installs, r.restores
+}
+
+func (r *retryingResolver) setUpstreams(upstreams ...string) {
+	r.mu.Lock()
+	r.upstreams = append([]string(nil), upstreams...)
+	r.mu.Unlock()
 }
 
 func waitResolverAttempt(t *testing.T, attempts <-chan int, want int) {
@@ -129,10 +142,71 @@ func TestSystemResolverRetriesTransientStartupFailure(t *testing.T) {
 	}
 }
 
+func TestSystemResolverWaitsForPhysicalUpstreamBeforeTakeover(t *testing.T) {
+	srv, err := dns.NewServer(dns.NewZone(""), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	resolver := &retryingResolver{
+		installAttempt: make(chan int, 1),
+		upstreamRead:   make(chan int, 2),
+	}
+	d := &Daemon{
+		cfg:       Config{TunnelDNS: "1.1.1.1:53", ManageResolv: true},
+		log:       slog.Default(),
+		dnsServer: srv,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	retry := make(chan time.Time, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.superviseSystemResolver(ctx, resolver, "127.0.0.1", retry)
+	}()
+
+	waitResolverAttempt(t, resolver.upstreamRead, 1)
+	if installs, _ := resolver.counts(); installs != 0 {
+		t.Fatalf("resolver installed without a physical upstream: installs=%d", installs)
+	}
+	if got := d.effectiveDNS(true); got != "system" {
+		t.Fatalf("DNS before physical upstream = %q, want system", got)
+	}
+
+	resolver.setUpstreams("192.0.2.53:53")
+	retry <- time.Now()
+	waitResolverAttempt(t, resolver.upstreamRead, 2)
+	waitResolverAttempt(t, resolver.installAttempt, 1)
+
+	deadline := time.Now().Add(time.Second)
+	for d.effectiveDNS(true) != "1.1.1.1:53" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	d.mu.Lock()
+	systemUpstreams := append([]string(nil), d.dnsSystemUpstrms...)
+	d.mu.Unlock()
+	if len(systemUpstreams) != 1 || systemUpstreams[0] != "192.0.2.53:53" {
+		t.Fatalf("direct upstreams after DHCP recovery = %v, want physical resolver", systemUpstreams)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("resolver supervisor did not stop")
+	}
+	installs, restores := resolver.counts()
+	if installs != 1 || restores != 1 {
+		t.Fatalf("resolver lifecycle installs=%d restores=%d, want 1/1", installs, restores)
+	}
+}
+
 func TestSystemResolverCancellationBeforeInstallDoesNotRestore(t *testing.T) {
 	resolver := &retryingResolver{
 		failures:       10,
 		installAttempt: make(chan int, 1),
+		upstreams:      []string{"192.0.2.53:53"},
 	}
 	d := &Daemon{log: slog.Default()}
 	ctx, cancel := context.WithCancel(context.Background())

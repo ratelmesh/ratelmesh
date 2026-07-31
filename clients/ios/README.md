@@ -113,11 +113,13 @@ Scripts/upload-app-store.sh build-release/RatelMesh.xcarchive
 # make release-ios VERSION=0.2.39 BUILD=240
 ```
 
-The shipped app declares `ITSAppUsesNonExemptEncryption=true` because its VPN
-data path includes WireGuard and hybrid post-quantum cryptography. Do not mark
-the build exempt merely to bypass App Store Connect's compliance workflow.
-Complete the applicable export declaration and regional documentation before
-review submission.
+The app uses published standard cryptography outside Apple's operating system,
+including WireGuard and ML-KEM. For the current distribution scope, which
+excludes France, App Store Connect does not require an uploaded declaration, so
+the shipped app sets `ITSAppUsesNonExemptEncryption=false`. Here `false` means
+exempt from Apple's document-upload workflow; it does not mean the app contains
+no encryption. Reassess this value and complete the applicable regional
+documentation before adding France or changing the cryptographic design.
 
 The same iOS/iPadOS binary compiles and runs on Apple silicon Macs as an
 iPad-designed app. That is the initial Mac App Store delivery path: opt the iOS

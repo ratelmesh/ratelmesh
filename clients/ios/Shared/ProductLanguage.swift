@@ -47,9 +47,11 @@ enum ProductLanguage: String, CaseIterable, Identifiable {
         let tag = self == .chinese ? "zh-Hans" : rawValue
         guard let path = Bundle.main.path(forResource: tag, ofType: "lproj"),
               let bundle = Bundle(path: path) else { return fallback }
-        let localized = bundle.localizedString(forKey: english, value: english, table: nil)
-        if localized != english { return localized }
-        return bundle.localizedString(forKey: english, value: fallback, table: "NetworkDoctor")
+        for table in [nil, "NetworkDoctor", "MacApp"] {
+            let localized = bundle.localizedString(forKey: english, value: english, table: table)
+            if localized != english { return localized }
+        }
+        return fallback
     }
 
     static func systemLanguage(for identifier: String?) -> ProductLanguage {

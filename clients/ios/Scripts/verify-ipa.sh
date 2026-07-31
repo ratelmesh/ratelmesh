@@ -19,8 +19,12 @@ test -n "$APP_BUNDLE"
 test -d "$EXTENSION_BUNDLE"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
-if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$APP_BUNDLE/Info.plist")" != "true" ]; then
-    echo "iOS IPA must declare non-exempt encryption use" >&2
+if [ "$(plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$APP_BUNDLE/Info.plist")" != "false" ]; then
+    echo "iOS IPA must declare its current export-document exemption" >&2
+    exit 1
+fi
+if plutil -extract ITSEncryptionExportComplianceCode raw -o - "$APP_BUNDLE/Info.plist" >/dev/null 2>&1; then
+    echo "iOS IPA must not contain an unapproved export compliance code" >&2
     exit 1
 fi
 

@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.ratelmesh
   deploymentTarget:
     iOS: "16.0"
+    macOS: "13.0"
   createIntermediateGroups: true
 configs:
   Debug: debug
@@ -48,7 +49,7 @@ targets:
         CFBundleDisplayName: RatelMesh
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        ITSAppUsesNonExemptEncryption: true
+        ITSAppUsesNonExemptEncryption: false
         RatelMeshAppGroup: "$(RATELMESH_APP_GROUP)"
         RatelMeshKeychainAccessGroup: "$(RATELMESH_KEYCHAIN_GROUP)"
         UILaunchScreen: {}
@@ -74,6 +75,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: RatelMesh/RatelMesh.entitlements
     dependencies:
       - target: PacketTunnel
+        embed: true
+      - target: RatelMeshControl
         embed: true
   PacketTunnel:
     type: app-extension
@@ -116,7 +119,7 @@ targets:
       - package: WireGuardKit
         product: WireGuardKit
       - target: RatelMeshControl
-        embed: true
+        embed: false
   RatelMeshTests:
     type: bundle.unit-test
     platform: iOS
@@ -128,6 +131,164 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.ios.tests
         GENERATE_INFOPLIST_FILE: YES
+  RatelMeshControlMac:
+    type: framework
+    platform: macOS
+    sources:
+      - RatelMeshControl
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.macos.control
+        PRODUCT_NAME: RatelMeshControlMac
+        PRODUCT_MODULE_NAME: RatelMeshControlMac
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+    dependencies:
+      - framework: Frameworks/RatelMeshMobile.xcframework
+        embed: false
+  RatelMeshMac:
+    type: application
+    platform: macOS
+    sources:
+      - ../macos-appstore/App
+      - RatelMesh/AppViewModel.swift
+      - RatelMesh/NetworkDoctorStore.swift
+      - RatelMesh/TunnelController.swift
+      - RatelMesh/TunnelErrorCopy.swift
+      - Shared
+      - path: ../macos-menubar/BrandMarkDark.png
+        buildPhase: resources
+      - path: ../macos-menubar/RatelMesh.icns
+        buildPhase: resources
+      - path: RatelMesh/de.lproj
+        buildPhase: resources
+      - path: RatelMesh/es.lproj
+        buildPhase: resources
+      - path: RatelMesh/fr.lproj
+        buildPhase: resources
+      - path: RatelMesh/it.lproj
+        buildPhase: resources
+      - path: RatelMesh/ja.lproj
+        buildPhase: resources
+      - path: RatelMesh/ko.lproj
+        buildPhase: resources
+      - path: RatelMesh/nl.lproj
+        buildPhase: resources
+      - path: RatelMesh/pl.lproj
+        buildPhase: resources
+      - path: RatelMesh/pt-BR.lproj
+        buildPhase: resources
+      - path: RatelMesh/sv.lproj
+        buildPhase: resources
+      - path: RatelMesh/zh-Hans.lproj
+        buildPhase: resources
+      - path: RatelMesh/zh-Hant.lproj
+        buildPhase: resources
+    info:
+      path: ../macos-appstore/RatelMeshMac-Info.plist
+      properties:
+        CFBundleDisplayName: RatelMesh
+        CFBundleIconFile: RatelMesh.icns
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        ITSAppUsesNonExemptEncryption: false
+        LSApplicationCategoryType: public.app-category.utilities
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        NSHighResolutionCapable: true
+        NSLocationUsageDescription: RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this Mac.
+        NSLocationWhenInUseUsageDescription: RatelMesh uses an authorized location reading only to place this device in a coarse region on your private network map. Exact coordinates stay on this Mac.
+        RatelMeshAppGroup: "$(RATELMESH_APP_GROUP)"
+        RatelMeshKeychainAccessGroup: "$(RATELMESH_KEYCHAIN_GROUP)"
+    entitlements:
+      path: ../macos-appstore/RatelMeshMac.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.application-groups:
+          - "$(RATELMESH_APP_GROUP)"
+        keychain-access-groups:
+          - "$(RATELMESH_KEYCHAIN_GROUP)"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.ios
+        PRODUCT_NAME: RatelMesh
+        PRODUCT_MODULE_NAME: RatelMesh
+        CODE_SIGN_ENTITLEMENTS: ../macos-appstore/RatelMeshMac.entitlements
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        ENABLE_HARDENED_RUNTIME: YES
+    dependencies:
+      - target: PacketTunnelMac
+        embed: true
+      - target: RatelMeshControlMac
+        embed: true
+  PacketTunnelMac:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: PacketTunnel
+        excludes:
+          - Info.plist
+          - PacketTunnel.entitlements
+      - Shared
+    info:
+      path: ../macos-appstore/PacketTunnelMac-Info.plist
+      properties:
+        CFBundleDisplayName: RatelMesh Tunnel
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        RatelMeshAppGroup: "$(RATELMESH_APP_GROUP)"
+        RatelMeshKeychainAccessGroup: "$(RATELMESH_KEYCHAIN_GROUP)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).PacketTunnelProvider"
+    entitlements:
+      path: ../macos-appstore/PacketTunnelMac.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true
+        com.apple.security.application-groups:
+          - "$(RATELMESH_APP_GROUP)"
+        keychain-access-groups:
+          - "$(RATELMESH_KEYCHAIN_GROUP)"
+    preBuildScripts:
+      - name: Build wireguard-go bridge for macOS
+        script: "$SRCROOT/Scripts/build-wireguard-go-macos.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.ios.PacketTunnel
+        PRODUCT_NAME: PacketTunnel
+        CODE_SIGN_ENTITLEMENTS: ../macos-appstore/PacketTunnelMac.entitlements
+        PRODUCT_MODULE_NAME: PacketTunnel
+        APPLICATION_EXTENSION_API_ONLY: YES
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        ENABLE_HARDENED_RUNTIME: YES
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
+      - target: RatelMeshControlMac
+        embed: false
+  RatelMeshMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: RatelMeshMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ratelmesh.macos.tests
+        GENERATE_INFOPLIST_FILE: YES
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/RatelMesh.app/Contents/MacOS/RatelMesh"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   RatelMesh:
     build:
@@ -138,3 +299,12 @@ schemes:
     test:
       targets:
         - RatelMeshTests
+  RatelMeshMac:
+    build:
+      targets:
+        RatelMeshMac: all
+        PacketTunnelMac: all
+        RatelMeshMacTests: [test]
+    test:
+      targets:
+        - RatelMeshMacTests

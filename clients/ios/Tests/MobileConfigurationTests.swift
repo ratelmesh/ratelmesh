@@ -2,7 +2,11 @@ import XCTest
 #if SWIFT_PACKAGE
 @testable import RatelMeshShared
 #else
+#if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 @testable import RatelMesh
 #endif
 
@@ -140,8 +144,120 @@ final class MobileConfigurationTests: XCTestCase {
             ).path
         ))
         #if !SWIFT_PACKAGE
+        #if canImport(UIKit)
         XCTAssertNotNil(UIImage(named: "BrandMarkDark"))
+        #elseif canImport(AppKit)
+        XCTAssertNotNil(NSImage(named: "BrandMarkDark"))
         #endif
+        #endif
+    }
+
+    func testNativeMacStoreTargetIsSandboxedAndDisclosesVPNDataUse() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let macRoot = iosRoot
+            .deletingLastPathComponent()
+            .appendingPathComponent("macos-appstore")
+        let project = try String(
+            contentsOf: iosRoot.appendingPathComponent("project.yml"),
+            encoding: .utf8
+        )
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("App/MacContentView.swift"),
+            encoding: .utf8
+        )
+        let app = try String(
+            contentsOf: macRoot.appendingPathComponent("App/RatelMeshMacApp.swift"),
+            encoding: .utf8
+        )
+        let appEntitlementsData = try Data(
+            contentsOf: macRoot.appendingPathComponent("RatelMeshMac.entitlements")
+        )
+        let tunnelEntitlementsData = try Data(
+            contentsOf: macRoot.appendingPathComponent("PacketTunnelMac.entitlements")
+        )
+        for data in [appEntitlementsData, tunnelEntitlementsData] {
+            let entitlements = try XCTUnwrap(
+                PropertyListSerialization.propertyList(from: data, format: nil)
+                    as? [String: Any]
+            )
+            XCTAssertEqual(entitlements["com.apple.security.app-sandbox"] as? Bool, true)
+            XCTAssertTrue(
+                (entitlements["com.apple.developer.networking.networkextension"]
+                    as? [String])?.contains("packet-tunnel-provider") == true
+            )
+            XCTAssertEqual(entitlements["com.apple.security.network.client"] as? Bool, true)
+        }
+        XCTAssertTrue(project.contains("RatelMeshMac:"))
+        XCTAssertTrue(project.contains("PacketTunnelMac:"))
+        XCTAssertTrue(project.contains("platform: macOS"))
+        XCTAssertTrue(project.contains("- path: PacketTunnel"))
+        XCTAssertTrue(project.contains("- Info.plist"))
+        XCTAssertTrue(view.contains("Data RatelMesh uses"))
+        XCTAssertTrue(view.contains("No sale or third-party disclosure"))
+        XCTAssertTrue(view.contains("does not collect browsing content or plaintext tunnel traffic"))
+        XCTAssertTrue(view.contains("https://ratelmesh.com/privacy"))
+        XCTAssertTrue(view.contains("NSImage(contentsOf: url)"))
+        XCTAssertFalse(view.contains("Image(\"BrandMarkDark\")"))
+        XCTAssertTrue(app.contains("XCTestConfigurationFilePath"))
+        XCTAssertTrue(app.contains("#if DEBUG"))
+        XCTAssertTrue(app.contains("RATELMESH_APP_STORE_SCREENSHOT_PATH"))
+        XCTAssertTrue(app.contains("MacAppStoreScreenshotCapture"))
+        XCTAssertTrue(view.contains("RATELMESH_APP_STORE_SCREEN"))
+        XCTAssertTrue(view.contains(".interactiveDismissDisabled(!privacyAcknowledged)"))
+        XCTAssertTrue(view.contains("!privacyAcknowledged"))
+        XCTAssertFalse(view.contains("ratelmeshd"))
+        XCTAssertFalse(view.contains("pfctl"))
+        XCTAssertFalse(view.contains("Sparkle"))
+    }
+
+    func testNativeMacLocalizationTableCoversVisibleCopy() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let requiredKeys = [
+            "Apply safe repair",
+            "Applying safe repair",
+            "Connect to reach your devices and private services.",
+            "Connected through your private mesh",
+            "Coordinator",
+            "Diagnosis could not complete. No repair was run.",
+            "Each change is verified and rolled back when needed.",
+            "Internet traffic uses your selected exit device",
+            "Leak protection on",
+            "No other devices",
+            "No remote access service is authorized",
+            "Overview",
+            "Privacy before connecting",
+            "Review privacy disclosure",
+            "Save the new enrollment code, then connect again.",
+            "State",
+            "System boundary",
+            "The Mac App Store edition uses Apple Network Extension. macOS gives selected traffic to RatelMesh only after you start the VPN.",
+            "Your enrollment expired or was revoked. Enter a new one-use enrollment code.",
+            "Your mesh devices appear after connecting.",
+            "Your network remains yours.",
+            "checks",
+        ]
+        let locales = [
+            "de", "es", "fr", "it", "ja", "ko", "nl", "pl",
+            "pt-BR", "sv", "zh-Hans", "zh-Hant",
+        ]
+        for locale in locales {
+            let table = try String(
+                contentsOf: iosRoot.appendingPathComponent(
+                    "RatelMesh/\(locale).lproj/MacApp.strings"
+                ),
+                encoding: .utf8
+            )
+            for key in requiredKeys {
+                XCTAssertTrue(
+                    table.contains("\"\(key)\" = "),
+                    "\(locale) is missing native Mac copy: \(key)"
+                )
+            }
+        }
     }
 
     func testDecodesVerifiedExitAndItsClients() throws {
@@ -649,6 +765,37 @@ final class MobileConfigurationTests: XCTestCase {
         )
         XCTAssertTrue(project.contains("RatelMeshControl:"))
         XCTAssertTrue(project.contains("- target: RatelMeshControl"))
+        let appTarget = try XCTUnwrap(project.range(of: "  RatelMesh:\n"))
+        let tunnelTarget = try XCTUnwrap(
+            project.range(of: "  PacketTunnel:\n", range: appTarget.upperBound..<project.endIndex)
+        )
+        let testsTarget = try XCTUnwrap(
+            project.range(of: "  RatelMeshTests:\n", range: tunnelTarget.upperBound..<project.endIndex)
+        )
+        let appTargetBody = project[appTarget.lowerBound..<tunnelTarget.lowerBound]
+        let tunnelTargetBody = project[tunnelTarget.lowerBound..<testsTarget.lowerBound]
+        XCTAssertTrue(appTargetBody.contains(
+            """
+            - target: RatelMeshControl
+                    embed: true
+            """
+        ))
+        XCTAssertTrue(tunnelTargetBody.contains(
+            """
+            - target: RatelMeshControl
+                    embed: false
+            """
+        ))
+        let archiveVerification = try String(
+            contentsOf: iosRoot.appendingPathComponent("Scripts/verify-archive.sh"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(archiveVerification.contains(
+            #"CONTROL_FRAMEWORK="$APP_BUNDLE/Frameworks/RatelMeshControl.framework""#
+        ))
+        XCTAssertTrue(archiveVerification.contains(
+            #"if [ -e "$EXTENSION_BUNDLE/Frameworks" ]"#
+        ))
         let source = try String(
             contentsOf: iosRoot.appendingPathComponent("RatelMeshControl/RatelMeshMobileClient.swift"),
             encoding: .utf8
@@ -680,6 +827,62 @@ final class MobileConfigurationTests: XCTestCase {
         XCTAssertTrue(adapterPatch.contains("if applyNetworkSettings"))
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: iosRoot.appendingPathComponent("PacketTunnel/RatelMeshMobileClient.swift").path
+        ))
+    }
+
+    func testAppStoreExportDeclarationMatchesCurrentDistributionScope() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let project = try String(
+            contentsOf: iosRoot.appendingPathComponent("project.yml"),
+            encoding: .utf8
+        )
+        let info = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/Info.plist"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(project.contains("ITSAppUsesNonExemptEncryption: false"))
+        XCTAssertFalse(project.contains("ITSEncryptionExportComplianceCode"))
+        XCTAssertTrue(info.contains(
+            "<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>"
+        ))
+        XCTAssertFalse(info.contains("ITSEncryptionExportComplianceCode"))
+
+        for scriptName in ["verify-archive.sh", "verify-ipa.sh"] {
+            let script = try String(
+                contentsOf: iosRoot.appendingPathComponent("Scripts/\(scriptName)"),
+                encoding: .utf8
+            )
+            XCTAssertTrue(script.contains(
+                "ITSEncryptionExportComplianceCode raw"
+            ))
+        }
+    }
+
+    func testAppStoreScreenshotFixtureCannotShipInRelease() throws {
+        let iosRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: iosRoot.appendingPathComponent("RatelMesh/AppViewModel.swift"),
+            encoding: .utf8
+        )
+        let fixtureStart = try XCTUnwrap(
+            source.range(of: "#if DEBUG\n    private func prepareAppStoreScreenshotFixture()")
+        )
+        let fixtureEnd = try XCTUnwrap(
+            source.range(
+                of: "\n#endif\n\n    func connect()",
+                range: fixtureStart.lowerBound..<source.endIndex
+            )
+        )
+        XCTAssertLessThan(fixtureStart.lowerBound, fixtureEnd.lowerBound)
+        XCTAssertTrue(source.contains(
+            "#if DEBUG\n        if ProcessInfo.processInfo.environment[\"RATELMESH_APP_STORE_SCREENSHOTS\"] == \"1\""
+        ))
+        XCTAssertTrue(source.contains(
+            "ProcessInfo.processInfo.environment[\"RATELMESH_APP_STORE_SCREEN\"] == \"settings\""
         ))
     }
 

@@ -415,9 +415,15 @@ private final class NetworkDoctorStore: ObservableObject {
     }
 }
 
+@MainActor
+private final class PanelLayoutStore: ObservableObject {
+    @Published var maximumHeight: CGFloat = 720
+}
+
 private struct Panel: View {
     @ObservedObject var store: Store
     @ObservedObject var updater: UpdateStore
+    @ObservedObject var layout: PanelLayoutStore
     @Environment(\.colorScheme) private var colorScheme
     @State private var picked = ""
     @State private var enrollmentCode = ""
@@ -432,29 +438,46 @@ private struct Panel: View {
     }
 
     var body: some View {
-        ScrollView { panelContent }
-            .frame(width: 430)
-            .frame(maxHeight: 720)
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                operationalContent
+                    .padding(14)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxHeight: max(220, layout.maximumHeight - 142))
+            Divider()
+            footer
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+        }
+        .frame(width: 430)
+        .frame(maxHeight: layout.maximumHeight)
+        .tint(RatelMeshBrand.action(for: colorScheme))
+        .onAppear {
+            if picked.isEmpty { picked = store.status?.activeExit ?? exits.first?.name ?? "" }
+        }
+        .onChange(of: store.status?.activeExit ?? "") { active in
+            if !active.isEmpty { picked = active }
+        }
+        .onChange(of: exits.map(\.name)) { names in
+            if !names.contains(picked) { picked = names.first ?? "" }
+        }
+        .onChange(of: language) { selected in
+            Copy.select(selected)
+            store.objectWillChange.send()
+        }
+        .sheet(isPresented: $showingNetworkDoctor) {
+            NetworkDoctorPanel(store: networkDoctor)
+        }
     }
 
     @ViewBuilder
-    private var panelContent: some View {
+    private var operationalContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                HStack(spacing: 8) {
-                    RatelMeshBrandMark(size: 20, template: true)
-                    Text("RatelMesh").font(.headline)
-                }
-                .accessibilityElement(children: .combine)
-                Spacer()
-                Picker(Copy.text("Language", "语言"), selection: $language) {
-                    ForEach(Copy.Language.allCases) { option in
-                        Text(Copy.languageName(option)).tag(option)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 120)
-            }
             if shouldShowEnrollment(status: store.status, locallyEnrolled: LocalEnrollment.complete) {
                 enrollmentPrompt
             } else if let status = store.status {
@@ -481,8 +504,25 @@ private struct Panel: View {
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
                     GridRow { Text(Copy.text("State", "状态")).foregroundStyle(.secondary); Text(localState(status.state)) }
-                    GridRow { Text(Copy.text("This device", "本机")).foregroundStyle(.secondary); Text("\(status.selfNode.meshIP)  \(status.selfNode.name)").lineLimit(1) }
-                    GridRow { Text(Copy.text("Exit", "出口")).foregroundStyle(.secondary); Text(status.activeExit.isEmpty ? (status.selectedExit.isEmpty ? Copy.text("none (direct)", "无（直连）") : Copy.format("connecting %@", "正在连接 %@", status.selectedExit)) : status.activeExit).lineLimit(1) }
+                    GridRow {
+                        Text(Copy.text("This device", "本机")).foregroundStyle(.secondary)
+                        Text("\(status.selfNode.meshIP)  \(status.selfNode.name)")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help("\(status.selfNode.meshIP)  \(status.selfNode.name)")
+                    }
+                    GridRow {
+                        let exitText = status.activeExit.isEmpty
+                            ? (status.selectedExit.isEmpty
+                                ? Copy.text("none (direct)", "无（直连）")
+                                : Copy.format("connecting %@", "正在连接 %@", status.selectedExit))
+                            : status.activeExit
+                        Text(Copy.text("Exit", "出口")).foregroundStyle(.secondary)
+                        Text(exitText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(exitText)
+                    }
                     GridRow { Text(Copy.text("Leak protection", "泄漏保护")).foregroundStyle(.secondary); Text(status.killSwitch ? Copy.text("On", "已开启") : Copy.text("Off", "关闭")) }
                 }
 
@@ -520,6 +560,8 @@ private struct Panel: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("\(client.name)  \(client.meshIP)")
                                         .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help("\(client.name)  \(client.meshIP)")
                                     Text(exitClientState(client.state))
                                         .font(.caption)
                                         .foregroundStyle(exitClientColor(client.state))
@@ -592,70 +634,87 @@ private struct Panel: View {
 
             Divider()
             VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Toggle(Copy.text("Automatic updates", "自动更新"), isOn: $updater.automaticUpdates)
-                        .toggleStyle(.checkbox)
-                    Spacer()
-                    Button(Copy.text("Check now", "检查更新")) {
-                        Task { await updater.check(manual: true) }
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Toggle(Copy.text("Automatic updates", "自动更新"), isOn: $updater.automaticUpdates)
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                        checkForUpdatesButton
                     }
-                    .disabled(updater.phase.busy)
+                    VStack(alignment: .leading, spacing: 7) {
+                        Toggle(Copy.text("Automatic updates", "自动更新"), isOn: $updater.automaticUpdates)
+                            .toggleStyle(.checkbox)
+                        HStack {
+                            Spacer()
+                            checkForUpdatesButton
+                        }
+                    }
                 }
                 updateStatus
             }
+        }
+    }
 
-            Divider()
-            VStack(spacing: 8) {
-                let connection = localConnectionPhase(
-                    status: store.status,
-                    reachable: store.reachable,
-                    locallyEnrolled: LocalEnrollment.complete
-                )
-                HStack {
-                    Circle().fill(connectionColor(connection)).frame(width: 9, height: 9)
-                        .accessibilityHidden(true)
-                    Text(connectionText(connection))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("v\(ProductInfo.version)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel(Copy.format("Version %@", "版本 %@", ProductInfo.version))
-                }
-                ViewThatFits(in: .horizontal) {
-                    lifecycleButtons
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Button(Copy.text("Privacy center…", "隐私中心…")) { LocationPrivacyReminder.openPrivacyCenter() }
-                            Button(Copy.text("Location settings…", "定位设置…")) { LocationPrivacyReminder.openSettings() }
-                        }
-                        HStack {
-                            Button(Copy.text("Help", "帮助")) { ProductInfo.openHelp() }
-                            Button(Copy.text("Uninstall…", "卸载…")) { ProductLifecycle.confirmUninstall() }
-                            Spacer()
-                            Button(Copy.text("Quit", "退出")) { NSApplication.shared.terminate(nil) }
-                        }
-                    }
+    private var header: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                RatelMeshBrandMark(size: 20, template: true)
+                Text("RatelMesh").font(.headline)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 12)
+            Picker(Copy.text("Language", "语言"), selection: $language) {
+                ForEach(Copy.Language.allCases) { option in
+                    Text(Copy.languageName(option)).tag(option)
                 }
             }
+            .labelsHidden()
+            .frame(width: 160)
+            .accessibilityLabel(Copy.text("Language", "语言"))
         }
-        .padding(14)
-        .tint(RatelMeshBrand.action(for: colorScheme))
-        .onAppear {
-            if picked.isEmpty { picked = store.status?.activeExit ?? exits.first?.name ?? "" }
-        }
-        .onChange(of: store.status?.activeExit ?? "") { active in
-            if !active.isEmpty { picked = active }
-        }
-        .onChange(of: exits.map(\.name)) { names in
-            if !names.contains(picked) { picked = names.first ?? "" }
-        }
-        .onChange(of: language) { selected in
-            Copy.select(selected)
-            store.objectWillChange.send()
-        }
-        .sheet(isPresented: $showingNetworkDoctor) {
-            NetworkDoctorPanel(store: networkDoctor)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 9) {
+            let connection = localConnectionPhase(
+                status: store.status,
+                reachable: store.reachable,
+                locallyEnrolled: LocalEnrollment.complete
+            )
+            HStack {
+                Circle().fill(connectionColor(connection)).frame(width: 9, height: 9)
+                    .accessibilityHidden(true)
+                Text(connectionText(connection))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("v\(ProductInfo.version)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Copy.format("Version %@", "版本 %@", ProductInfo.version))
+            }
+            HStack(spacing: 8) {
+                Button(Copy.text("Help", "帮助")) { ProductInfo.openHelp() }
+                Spacer()
+                Menu {
+                    Button(Copy.text("Privacy center…", "隐私中心…")) {
+                        LocationPrivacyReminder.openPrivacyCenter()
+                    }
+                    Button(Copy.text("Location settings…", "定位设置…")) {
+                        LocationPrivacyReminder.openSettings()
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        ProductLifecycle.confirmUninstall()
+                    } label: {
+                        Text(Copy.text("Uninstall…", "卸载…"))
+                    }
+                } label: {
+                    Label(Copy.text("More", "更多"), systemImage: "ellipsis.circle")
+                }
+                Button(Copy.text("Quit Menu", "退出菜单")) {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
         }
     }
 
@@ -687,11 +746,21 @@ private struct Panel: View {
     @ViewBuilder
     private func remotePeerIdentity(_ peer: Peer) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(peer.name).lineLimit(1)
+            Text(peer.name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(peer.name)
             Text("\(peer.meshIP) · \(peer.platform ?? Copy.text("unknown", "未知平台"))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var checkForUpdatesButton: some View {
+        Button(Copy.text("Check now", "检查更新")) {
+            Task { await updater.check(manual: true) }
+        }
+        .disabled(updater.phase.busy)
     }
 
     @ViewBuilder
@@ -703,18 +772,6 @@ private struct Panel: View {
                 }
                 .accessibilityLabel(Text(remoteAccessAccessibilityLabel(service, peer: peer)))
             }
-        }
-    }
-
-    @ViewBuilder
-    private var lifecycleButtons: some View {
-        HStack {
-            Button(Copy.text("Privacy center…", "隐私中心…")) { LocationPrivacyReminder.openPrivacyCenter() }
-            Button(Copy.text("Location settings…", "定位设置…")) { LocationPrivacyReminder.openSettings() }
-            Button(Copy.text("Help", "帮助")) { ProductInfo.openHelp() }
-            Button(Copy.text("Uninstall…", "卸载…")) { ProductLifecycle.confirmUninstall() }
-            Spacer()
-            Button(Copy.text("Quit", "退出")) { NSApplication.shared.terminate(nil) }
         }
     }
 
@@ -1000,35 +1057,20 @@ private struct NetworkDoctorPanel: View {
             }
 
             Divider()
-            HStack {
-                if store.phase == .idle {
-                    Button(Copy.text("Network Doctor", "一键网络医生")) {
-                        Task { await store.run() }
-                    }
-                    .buttonStyle(.borderedProminent)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    doctorLeadingActions
+                    Spacer()
+                    doctorTrailingActions
                 }
-                if store.diagnosis != nil {
-                    Button(Copy.text("Export redacted report…", "导出脱敏报告…")) {
-                        exportReport()
+                VStack(alignment: .leading, spacing: 8) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack { doctorLeadingActions }
+                        VStack(alignment: .leading, spacing: 8) { doctorLeadingActions }
                     }
-                    .accessibilityHint(Copy.text(
-                        "Exports only the redacted JSON report shown here.",
-                        "仅导出当前显示的脱敏 JSON 报告。"
-                    ))
-                }
-                Spacer()
-                if store.canRepair {
-                    Button(
-                        store.diagnosis?.executableRepairs.first?.title
-                            ?? Copy.text("Ready", "可执行")
-                    ) {
-                        store.requestConfirmation()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                if store.phase == .failed || store.phase == .finished || store.phase == .review {
-                    Button(Copy.text("Run again", "重新诊断")) {
-                        Task { await store.run() }
+                    HStack {
+                        Spacer()
+                        doctorTrailingActions
                     }
                 }
             }
@@ -1054,6 +1096,47 @@ private struct NetworkDoctorPanel: View {
             Button(Copy.text("Cancel", "取消"), role: .cancel) { store.cancelConfirmation() }
         } message: {
             Text(store.diagnosis?.executableRepairs.first?.action ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var doctorLeadingActions: some View {
+        Group {
+            if store.phase == .idle {
+                Button(Copy.text("Network Doctor", "一键网络医生")) {
+                    Task { await store.run() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            if store.diagnosis != nil {
+                Button(Copy.text("Export redacted report…", "导出脱敏报告…")) {
+                    exportReport()
+                }
+                .accessibilityHint(Copy.text(
+                    "Exports only the redacted JSON report shown here.",
+                    "仅导出当前显示的脱敏 JSON 报告。"
+                ))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var doctorTrailingActions: some View {
+        Group {
+            if store.canRepair {
+                Button(
+                    store.diagnosis?.executableRepairs.first?.title
+                        ?? Copy.text("Ready", "可执行")
+                ) {
+                    store.requestConfirmation()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            if store.phase == .failed || store.phase == .finished || store.phase == .review {
+                Button(Copy.text("Run again", "重新诊断")) {
+                    Task { await store.run() }
+                }
+            }
         }
     }
 
@@ -1248,9 +1331,10 @@ private enum ProductLifecycle {
             "This stops RatelMesh, restores direct networking, and removes the app, device identity, settings, and logs from this Mac.",
             "这会停止 RatelMesh、恢复本机直连，并删除这台 Mac 上的应用、设备身份、设置和日志。"
         )
-        alert.addButton(withTitle: Copy.text("Uninstall", "卸载"))
         alert.addButton(withTitle: Copy.text("Cancel", "取消"))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let uninstallButton = alert.addButton(withTitle: Copy.text("Uninstall", "卸载"))
+        uninstallButton.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
 
         let helper = "/usr/local/ratelmesh/bin/ratelmesh-uninstall"
         do {
@@ -1322,6 +1406,7 @@ private enum LocationPrivacyReminder {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = Store()
     private let updater = UpdateStore()
+    private let panelLayout = PanelLayoutStore()
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
 
@@ -1366,10 +1451,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover.behavior = .transient
         popover.animates = false
-        popover.contentSize = NSSize(width: 430, height: 720)
-        popover.contentViewController = NSHostingController(
-            rootView: Panel(store: store, updater: updater)
+        let controller = NSHostingController(
+            rootView: Panel(store: store, updater: updater, layout: panelLayout)
         )
+        controller.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = controller
         statusItem = item
     }
 
@@ -1383,6 +1469,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPopover() {
         guard let button = statusItem?.button else { return }
+        let visibleHeight = (button.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 768
+        panelLayout.maximumHeight = min(720, max(280, visibleHeight - 48))
         popover.show(
             relativeTo: button.bounds,
             of: button,

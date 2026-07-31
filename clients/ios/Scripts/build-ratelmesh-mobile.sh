@@ -11,13 +11,25 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 
 # New gomobile releases require an x/mobile tool directive. Keep that build-only
 # dependency out of RatelMesh's production go.mod by binding a temp copy.
-rsync -a --exclude .git --exclude clients "$REPO_ROOT/" "$WORK/repo/"
+rsync -a \
+    --exclude .git \
+    --exclude clients \
+    --exclude dist \
+    --exclude bin \
+    --exclude website \
+    --exclude deploy \
+    "$REPO_ROOT/" "$WORK/repo/"
 cd "$WORK/repo"
 export PATH="/opt/homebrew/bin:$WORK/bin:$(go env GOPATH)/bin:$PATH"
 go get -tool "golang.org/x/mobile/cmd/gobind@$XMOBILE_VERSION"
 GOBIN="$WORK/bin" go install "golang.org/x/mobile/cmd/gomobile@$XMOBILE_VERSION"
 GOBIN="$WORK/bin" go install "golang.org/x/mobile/cmd/gobind@$XMOBILE_VERSION"
 rm -rf "$OUTPUT"
-"$WORK/bin/gomobile" bind -target=ios -o "$OUTPUT" ./mobile
+"$WORK/bin/gomobile" bind \
+    -target=ios,macos \
+    -iosversion=16.0 \
+    -macosversion=13.0 \
+    -o "$OUTPUT" \
+    ./mobile
 
 printf '%s\n' "Generated $OUTPUT"

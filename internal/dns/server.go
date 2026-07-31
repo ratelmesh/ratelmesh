@@ -2,8 +2,12 @@ package dns
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
+	"io"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -16,13 +20,17 @@ import (
 // peer mesh IPs, and normal DNS keeps working (DESIGN.md §3.1). With no upstream
 // it stays authoritative-only (out-of-zone names return NXDOMAIN).
 type Server struct {
-	zone *Zone
-	conn *net.UDPConn
+	zone        *Zone
+	conn        *net.UDPConn
+	tcpListener net.Listener
 	// serveSlots bounds all in-flight packet handlers, including malformed and
 	// authoritative queries. querySlots below is a separate, smaller budget for
 	// slow upstream waits, so mesh answers remain available during an upstream
 	// flood without allowing a local/mesh UDP flood to spawn unbounded goroutines.
 	serveSlots chan struct{}
+	// tcpSlots separately bounds long-lived DNS-over-TCP connections so a client
+	// holding TCP sessions open cannot consume the UDP handler budget.
+	tcpSlots chan struct{}
 	// querySlots bounds concurrent upstream waits. DNS clients routinely issue
 	// A and AAAA (plus several hostnames) in parallel; processing them inline in
 	// Serve caused one slow/blocked query to stall every resolver request behind
@@ -33,23 +41,59 @@ type Server struct {
 	upstreams []string // host:port resolvers for out-of-zone names
 }
 
-// NewServer binds a DNS server on addr (host:port, UDP) serving zone. Any
-// upstreams (host:port) receive queries for names outside the zone.
+const (
+	maxDNSMessageSize     = 65535
+	dnsIOTimeout          = 3 * time.Second
+	maxEphemeralBindTries = 10
+	temporaryAcceptDelay  = 10 * time.Millisecond
+)
+
+// NewServer binds a DNS server on addr (host:port, UDP and TCP) serving zone.
+// Any upstreams (host:port) receive queries for names outside the zone.
 func NewServer(zone *Zone, addr string, upstreams ...string) (*Server, error) {
-	uaddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.ListenUDP("udp", uaddr)
+	conn, tcpListener, err := listenDNS(addr, net.Listen)
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
-		zone: zone, conn: conn,
-		serveSlots: make(chan struct{}, 256),
-		querySlots: make(chan struct{}, 64),
-		upstreams:  upstreams,
+		zone:        zone,
+		conn:        conn,
+		tcpListener: tcpListener,
+		serveSlots:  make(chan struct{}, 256),
+		tcpSlots:    make(chan struct{}, 64),
+		querySlots:  make(chan struct{}, 64),
+		upstreams:   upstreams,
 	}, nil
+}
+
+type tcpListenFunc func(network, address string) (net.Listener, error)
+
+func listenDNS(addr string, listenTCP tcpListenFunc) (*net.UDPConn, net.Listener, error) {
+	uaddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	attempts := 1
+	if uaddr.Port == 0 {
+		attempts = maxEphemeralBindTries
+	}
+	var tcpErr error
+	for range attempts {
+		conn, err := net.ListenUDP("udp", uaddr)
+		if err != nil {
+			return nil, nil, err
+		}
+		tcpListener, err := listenTCP("tcp", conn.LocalAddr().String())
+		if err == nil {
+			return conn, tcpListener, nil
+		}
+		_ = conn.Close()
+		tcpErr = err
+		if uaddr.Port != 0 || !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, nil, err
+		}
+	}
+	return nil, nil, tcpErr
 }
 
 // SetUpstreams atomically replaces the out-of-zone resolvers. The daemon uses
@@ -72,8 +116,40 @@ func (s *Server) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 
 // Serve processes queries until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
-	go func() { <-ctx.Done(); s.conn.Close() }()
-	buf := make([]byte, 512)
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errs := make(chan error, 2)
+	var handlers sync.WaitGroup
+	go func() { errs <- s.serveUDP(serveCtx, &handlers) }()
+	go func() { errs <- s.serveTCP(serveCtx, &handlers) }()
+
+	stopWatcher := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-ctx.Done():
+			_ = s.Close()
+		case <-stopWatcher:
+		}
+	}()
+
+	err := <-errs
+	cancel()
+	_ = s.Close()
+	<-errs
+	close(stopWatcher)
+	<-watcherDone
+	handlers.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (s *Server) serveUDP(ctx context.Context, handlers *sync.WaitGroup) error {
+	buf := make([]byte, maxDNSMessageSize)
 	for {
 		n, from, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
@@ -92,9 +168,11 @@ func (s *Server) Serve(ctx context.Context) error {
 		q := make([]byte, n)
 		copy(q, buf[:n])
 		fromCopy := *from
+		handlers.Add(1)
 		go func() {
+			defer handlers.Done()
 			defer func() { <-s.serveSlots }()
-			resp, err := s.respond(q)
+			resp, err := s.respondContext(ctx, q)
 			if err != nil {
 				return
 			}
@@ -103,11 +181,98 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+func (s *Server) serveTCP(ctx context.Context, handlers *sync.WaitGroup) error {
+	for {
+		conn, err := s.tcpListener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(temporaryAcceptDelay):
+					continue
+				}
+			}
+			return err
+		}
+		select {
+		case s.tcpSlots <- struct{}{}:
+			handlers.Add(1)
+			go func() {
+				defer handlers.Done()
+				defer func() { <-s.tcpSlots }()
+				s.serveTCPConn(ctx, conn)
+			}()
+		case <-ctx.Done():
+			_ = conn.Close()
+			return ctx.Err()
+		default:
+			_ = conn.Close()
+		}
+	}
+}
+
+func (s *Server) serveTCPConn(ctx context.Context, conn net.Conn) {
+	defer conn.Close()
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+	var sizeBuf [2]byte
+	for {
+		if err := conn.SetReadDeadline(time.Now().Add(dnsIOTimeout)); err != nil {
+			return
+		}
+		if _, err := io.ReadFull(conn, sizeBuf[:]); err != nil {
+			return
+		}
+		size := int(binary.BigEndian.Uint16(sizeBuf[:]))
+		if size == 0 {
+			return
+		}
+		query := make([]byte, size)
+		if _, err := io.ReadFull(conn, query); err != nil {
+			return
+		}
+		resp, err := s.respondContext(ctx, query)
+		if err != nil || len(resp) == 0 || len(resp) > maxDNSMessageSize {
+			return
+		}
+		if err := conn.SetWriteDeadline(time.Now().Add(dnsIOTimeout)); err != nil {
+			return
+		}
+		binary.BigEndian.PutUint16(sizeBuf[:], uint16(len(resp)))
+		if err := writeAll(conn, sizeBuf[:]); err != nil {
+			return
+		}
+		if err := writeAll(conn, resp); err != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
 // Close stops the server.
-func (s *Server) Close() error { return s.conn.Close() }
+func (s *Server) Close() error {
+	udpErr := s.conn.Close()
+	tcpErr := s.tcpListener.Close()
+	if udpErr != nil {
+		return udpErr
+	}
+	return tcpErr
+}
 
 // respond builds a reply for a raw query message.
 func (s *Server) respond(query []byte) ([]byte, error) {
+	return s.respondContext(context.Background(), query)
+}
+
+func (s *Server) respondContext(ctx context.Context, query []byte) ([]byte, error) {
 	var p dnsmessage.Parser
 	hdr, err := p.Start(query)
 	if err != nil {
@@ -133,7 +298,7 @@ func (s *Server) respond(query []byte) ([]byte, error) {
 			// mesh answers, which never need an upstream slot.
 			return servfail(query), nil
 		}
-		if resp, ok := s.forwardTo(upstreams, query); ok {
+		if resp, ok := s.forwardTo(ctx, upstreams, query); ok {
 			return resp, nil
 		}
 		// Upstream failed: SERVFAIL rather than a wrong authoritative answer.
@@ -191,25 +356,104 @@ func (s *Server) respond(query []byte) ([]byte, error) {
 }
 
 // forwardTo relays a raw query to the first of the given upstreams that answers.
-func (s *Server) forwardTo(upstreams []string, query []byte) ([]byte, bool) {
+func (s *Server) forwardTo(ctx context.Context, upstreams []string, query []byte) ([]byte, bool) {
+	dialer := net.Dialer{Timeout: dnsIOTimeout}
 	for _, up := range upstreams {
-		conn, err := net.Dial("udp", up)
+		conn, err := dialer.DialContext(ctx, "udp", up)
 		if err != nil {
 			continue
 		}
-		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		_ = conn.SetDeadline(time.Now().Add(dnsIOTimeout))
+		stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
 		if _, err := conn.Write(query); err != nil {
-			conn.Close()
+			stopCancel()
+			_ = conn.Close()
 			continue
 		}
-		buf := make([]byte, 1500)
+		buf := make([]byte, maxDNSMessageSize)
 		n, err := conn.Read(buf)
-		conn.Close()
-		if err == nil && n > 0 {
-			return buf[:n], true
+		stopCancel()
+		_ = conn.Close()
+		if err != nil || n == 0 {
+			continue
+		}
+		resp := buf[:n]
+		truncated, ok := matchingResponse(query, resp)
+		if !ok {
+			continue
+		}
+		if !truncated {
+			return resp, true
+		}
+		if resp, ok := forwardTCP(ctx, up, query); ok {
+			if _, matches := matchingResponse(query, resp); matches {
+				return resp, true
+			}
 		}
 	}
 	return nil, false
+}
+
+func forwardTCP(ctx context.Context, upstream string, query []byte) ([]byte, bool) {
+	if len(query) == 0 || len(query) > maxDNSMessageSize {
+		return nil, false
+	}
+	dialer := net.Dialer{Timeout: dnsIOTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", upstream)
+	if err != nil {
+		return nil, false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(dnsIOTimeout))
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
+
+	var sizeBuf [2]byte
+	binary.BigEndian.PutUint16(sizeBuf[:], uint16(len(query)))
+	if err := writeAll(conn, sizeBuf[:]); err != nil {
+		return nil, false
+	}
+	if err := writeAll(conn, query); err != nil {
+		return nil, false
+	}
+	if _, err := io.ReadFull(conn, sizeBuf[:]); err != nil {
+		return nil, false
+	}
+	size := int(binary.BigEndian.Uint16(sizeBuf[:]))
+	if size == 0 {
+		return nil, false
+	}
+	resp := make([]byte, size)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return nil, false
+	}
+	return resp, true
+}
+
+func matchingResponse(query, response []byte) (truncated, ok bool) {
+	if len(query) < 2 {
+		return false, false
+	}
+	var p dnsmessage.Parser
+	hdr, err := p.Start(response)
+	if err != nil || !hdr.Response || hdr.ID != binary.BigEndian.Uint16(query[:2]) {
+		return false, false
+	}
+	return hdr.Truncated, true
+}
+
+func writeAll(conn net.Conn, buf []byte) error {
+	for len(buf) > 0 {
+		n, err := conn.Write(buf)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
+		buf = buf[n:]
+	}
+	return nil
 }
 
 // setRCodeNameError sets the RCODE nibble of a DNS message header to NXDOMAIN(3).

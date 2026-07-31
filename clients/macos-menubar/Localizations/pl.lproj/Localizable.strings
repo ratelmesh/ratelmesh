@@ -33,6 +33,8 @@
 "Help" = "Pomoc";
 "Uninstall…" = "Odinstaluj…";
 "Quit" = "Zakończ";
+"More" = "Więcej";
+"Quit Menu" = "Zamknij menu";
 "Switching to DIRECT…" = "Przełączanie na DIRECT…";
 "Selecting EXIT · %@…" = "Wybieranie EXIT-u · %@…";
 "EXIT route active · verifying traffic…" = "Trasa EXIT aktywna · weryfikowanie ruchu…";
